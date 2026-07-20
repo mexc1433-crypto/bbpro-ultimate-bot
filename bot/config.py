@@ -114,7 +114,7 @@ class BotConfig:
     telegram_chat_id:   str  = ""
 
     # Database
-    db_enabled: bool = True
+    db_enabled: bool = False  # Disabled on Railway (no persistent storage)
     db_path:    str  = "/tmp/bbpro_trades.db"
 
     # Web Monitor
@@ -214,6 +214,10 @@ def load_config() -> BotConfig:
     cfg.telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID', '7005859703').strip()
     if cfg.telegram_bot_token:
         cfg.telegram_enabled = True
+    # Allow enabling DB via env var
+    if os.environ.get('DB_ENABLED', '').lower() == 'true':
+        cfg.db_enabled = True
+        cfg.db_path = os.environ.get('DB_PATH', '/tmp/bbpro_trades.db')
     return cfg
 
 
