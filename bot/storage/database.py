@@ -105,6 +105,8 @@ class TradeDB:
             conn.close()
 
     def _init_schema(self):
+        import os
+        os.makedirs(os.path.dirname(str(self.db_path)) or '.', exist_ok=True)
         with self._conn() as c:
             c.executescript(SCHEMA)
         logger.info("Database ready: %s", self.db_path)
