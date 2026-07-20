@@ -115,12 +115,12 @@ class BotConfig:
 
     # Database
     db_enabled: bool = True
-    db_path:    str  = "/app/bbpro/trades.db"
+    db_path:    str  = "/tmp/bbpro_trades.db"
 
     # Web Monitor
     web_monitor_enabled: bool = True
     web_monitor_host:    str  = "0.0.0.0"
-    web_monitor_port:    int  = 5100
+    web_monitor_port:    int  = int(os.environ.get('PORT', 5100))
 
     # Bot Loop
     poll_interval_sec:   int   = 30
