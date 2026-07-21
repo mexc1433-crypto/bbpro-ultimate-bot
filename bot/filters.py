@@ -221,7 +221,7 @@ def parse_news_times(news_str: str) -> list:
     return times
 
 
-def should_close_all_on_friday(now=None) -> bool:
+def should_close_all_on_friday(*args, now=None) -> bool:
     """Returns True on Fridays after 20:00 UTC."""
     from datetime import datetime, timezone
     if now is None:

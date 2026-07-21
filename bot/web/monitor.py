@@ -744,18 +744,7 @@ def create_app(db_path: str = "bbpro.db"):
         return jsonify({"status": "success", "paused": False})
 
 
-    @app.route("/api/account")
-    def api_account():
-        return jsonify({
-            "balance":             app.config.get("ACCOUNT_BALANCE", 0.0),
-            "equity":              app.config.get("ACCOUNT_BALANCE", 0.0),
-            "account_id":          47838646,
-            "currency":            "EUR",
-            "open_positions_count": len(app.config.get("OPEN_POSITIONS", [])),
-            "bot_paused":          app.config.get("BOT_PAUSED", False),
-            "confluence_score":    app.config.get("CONFLUENCE_SCORE", 0),
-        })
-
+    
     @app.route("/api/open_positions")
     def api_open_positions():
         return jsonify(app.config.get("OPEN_POSITIONS", []))
