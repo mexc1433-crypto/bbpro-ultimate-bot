@@ -171,6 +171,8 @@ class BollingerBreakoutBotV2:
                 _flask_app.config['ACCOUNT_BALANCE'] = equity
                 _flask_app.config['ACCOUNT_EQUITY']  = equity
                 _flask_app.config['ACCOUNT_ID']      = str(self.cfg.account_id)
+                _flask_app.config['TRADING_MODE']   = 'LIVE' if self.client.is_live else 'PAPER'
+                _flask_app.config['TCP_CONNECTED']  = self.client.is_live
         except Exception:
             pass
 

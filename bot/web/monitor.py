@@ -390,6 +390,17 @@ async function loadAccount() {
     badge.textContent = '▶️ يعمل بنشاط';
     badge.className = 'badge buy';
   }
+  // Trading mode
+  const modeBadge = document.getElementById('tradingModeBadge');
+  if (modeBadge) {
+    if (acc.trading_mode === 'LIVE') {
+      modeBadge.textContent = '🟢 LIVE — cTrader Connected';
+      modeBadge.style.cssText = 'background:#00c853;color:#000;padding:3px 10px;border-radius:6px;font-weight:700';
+    } else {
+      modeBadge.textContent = '📝 PAPER MODE — Real Data';
+      modeBadge.style.cssText = 'background:#ff9800;color:#000;padding:3px 10px;border-radius:6px;font-weight:700';
+    }
+  }
 
   // Last Signal
   const sig = acc.last_signal || {};
@@ -706,6 +717,8 @@ def create_app(db_path: str = "bbpro.db"):
             "account_id": account_id,
             "open_positions_count": open_positions_count,
             "bot_paused": app.config.get('BOT_PAUSED', False),
+            "trading_mode": app.config.get('TRADING_MODE', 'PAPER'),
+            "tcp_connected": app.config.get('TCP_CONNECTED', False),
             "trades_today": trades_today,
             "pips_today": pips_today,
             "winrate_today": winrate_today,
