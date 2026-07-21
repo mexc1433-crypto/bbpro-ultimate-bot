@@ -209,7 +209,13 @@ def load_config() -> BotConfig:
     cfg = BotConfig()
     cfg.client_id = os.environ.get('CTRADER_CLIENT_ID_3', os.environ.get('CTRADER_CLIENT_ID', '')).strip()
     cfg.client_secret = os.environ.get('CTRADER_SECRET_4', os.environ.get('CTRADER_SECRET', '')).strip()
-    cfg.access_token = os.environ.get('CTRADER_ACCESS_TOKEN_2', os.environ.get('CTRADER_ACCESS_TOKEN', '')).strip()
+    cfg.access_token = os.environ.get('CTRADER_API_TOKEN', os.environ.get('CTRADER_ACCESS_TOKEN', os.environ.get('CTRADER_ACCESS_TOKEN_2', ''))).strip()
+    _account_id = os.environ.get('CTRADER_ACCOUNT_ID', '').strip()
+    if _account_id:
+        try:
+            cfg.account_id = int(_account_id)
+        except ValueError:
+            pass
     cfg.telegram_bot_token = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
     cfg.telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID', '7005859703').strip()
     if cfg.telegram_bot_token:
