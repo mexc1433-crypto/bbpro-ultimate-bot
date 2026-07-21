@@ -27,6 +27,9 @@ Or embed in main.py:
 
 import argparse
 import logging
+
+# Global Flask app reference — set when monitor starts
+_flask_app_ref = [None]
 import sqlite3
 import threading
 import os
@@ -563,7 +566,7 @@ def create_app(db_path: str = "bbpro.db"):
         raise
 
     app = Flask(__name__)
-    _flask_app_ref[0] = app  # exported for main.py
+    _flask_app_ref[0] = app
     app.config["DB_PATH"] = db_path
     app.config["BOT_PAUSED"] = False
     app.config["ACCOUNT_BALANCE"] = 0.0
