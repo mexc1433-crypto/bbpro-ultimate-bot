@@ -219,7 +219,8 @@ class BollingerBreakoutBotV2:
         # Update web dashboard with real balance (only for XAUUSD instance)
         if self.cfg.symbol == "XAUUSD" and equity > 0:
             try:
-                from web.monitor import _flask_app
+                from web.monitor import _flask_app_ref
+                _flask_app = _flask_app_ref[0]
                 if _flask_app:
                     _flask_app.config['ACCOUNT_BALANCE'] = equity
                     _flask_app.config['ACCOUNT_EQUITY']  = equity
