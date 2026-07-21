@@ -288,7 +288,45 @@ class CTraderClient:
         req.toTimestamp = to_ms
         req.count = count
         self._client.send(req)
-        return []   # Real impl would await deferred
+        # Fallback: fetch via Spotware REST API  
+        import asyncio, aiohttp, time as _time
+        try:
+            tf_rest = {
+                "m1":"M1","m5":"M5","m15":"M15","m30":"M30",
+                "h1":"H1","h4":"H4","d1":"D1"
+            }.get(timeframe, "M30")
+            to_ts = int(_time.time() * 1000)
+            from_ts = to_ts - count * mins * 60 * 1000
+            rest_url = (
+                f"https://api.spotware.com/connect/tradingaccounts/"
+                f"{self.cfg.account_id}/symbols/{sym_id}/trendbars/{tf_rest}"
+                f"?count={count}&from={from_ts}&to={to_ts}"
+                f"&access_token={self.cfg.access_token}"
+            )
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get(rest_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        raw = await resp.json(content_type=None)
+                        bars_raw = raw.get("data", raw) if isinstance(raw, dict) else raw
+                        result = []
+                        for b in (bars_raw or []):
+                            try:
+                                pip = 0.0001 if "JPY" not in symbol_name and "XAU" not in symbol_name else 0.01
+                                o = b.get("open",0) / 100000
+                                h = b.get("high", o)
+                                l = b.get("low",  o)
+                                c = b.get("close",o)
+                                v = b.get("volume", 0)
+                                ts= b.get("timestamp", 0) / 1000
+                                result.append(Bar(open=o,high=h,low=l,close=c,volume=v,timestamp=ts))
+                            except Exception:
+                                pass
+                        if result:
+                            logger.info("[REST] Got %d bars for %s/%s", len(result), symbol_name, timeframe)
+                            return result
+        except Exception as e:
+            logger.warning("[REST bars] %s", e)
+        return []
 
     # ------------------------------------------------------------------
     #  LIVE QUOTES
@@ -406,10 +444,23 @@ class CTraderClient:
     #  ACCOUNT INFO
     # ------------------------------------------------------------------
     async def get_account_equity(self) -> float:
-        """Return current account equity in account currency."""
-        if not HAS_CTADER_API:
-            return 10_000.0   # stub
-        # Return cached equity if available
+        """Return current account equity via Spotware REST API."""
+        import aiohttp
+        try:
+            url = (f"https://api.spotware.com/connect/tradingaccounts"
+                   f"?access_token={self.cfg.access_token}")
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get(url, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                    if r.status == 200:
+                        data = await r.json(content_type=None)
+                        accounts = data.get("data", [])
+                        for a in accounts:
+                            if str(a.get("accountId")) == str(self.cfg.account_id):
+                                bal = a.get("balance", 0) / 100
+                                self._cached_equity = bal
+                                return bal
+        except Exception as e:
+            logger.warning("get_account_equity REST error: %s", e)
         return self._cached_equity if self._cached_equity else 10_000.0
 
     # ------------------------------------------------------------------
