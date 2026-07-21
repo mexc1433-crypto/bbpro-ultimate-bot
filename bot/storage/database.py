@@ -1,223 +1,208 @@
 """
-storage/database.py
-===================
-SQLite database for trade logging and analytics.
-
-Tables:
-  - trades:        every opened/closed trade with P/L
-  - equity_curve:  equity snapshot every poll tick
-  - signals:       every entry signal (even rejected ones)
-  - errors:        every exception / kill-switch event
+storage/database.py - BBPro Ultimate v2
+Handles all trade/equity/error persistence in SQLite.
 """
-
-import logging
 import sqlite3
-import time
+import logging
 from contextlib import contextmanager
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS trades (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    open_time       TEXT NOT NULL,
-    close_time      TEXT,
-    symbol          TEXT NOT NULL,
-    side            TEXT NOT NULL,           -- buy / sell
-    volume_units    REAL NOT NULL,
-    entry_price     REAL NOT NULL,
-    exit_price      REAL,
-    sl_price        REAL,
-    tp_price        REAL,
-    sl_pips         REAL,
-    tp_pips         REAL,
-    close_reason    TEXT,                    -- tp / sl / be / trail / partial / rsi_exit / max_bars / session_end / friday
-    pips_result     REAL,
-    profit_amount   REAL,
-    atr_at_open     REAL,
-    adx_at_open     REAL,
-    rsi_at_open     REAL,
-    label           TEXT
-);
-
-CREATE TABLE IF NOT EXISTS equity_curve (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts              TEXT NOT NULL,
-    equity          REAL NOT NULL,
-    balance         REAL NOT NULL,
-    open_positions  INTEGER NOT NULL,
-    floating_pnl    REAL NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS signals (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts              TEXT NOT NULL,
-    symbol          TEXT NOT NULL,
-    side            TEXT NOT NULL,
-    direction       TEXT NOT NULL,           -- buy / sell
-    accepted        INTEGER NOT NULL,        -- 0 or 1
-    reject_reason   TEXT,
-    price           REAL,
-    rsi             REAL,
-    ema_fast        REAL,
-    ema_slow        REAL,
-    atr             REAL,
-    adx             REAL
-);
-
-CREATE TABLE IF NOT EXISTS errors (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts              TEXT NOT NULL,
-    severity        TEXT NOT NULL,           -- warning / error / kill_switch
-    category        TEXT NOT NULL,           -- order / connection / data / logic
-    message         TEXT NOT NULL,
-    traceback       TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_trades_open_time ON trades(open_time);
-CREATE INDEX IF NOT EXISTS idx_trades_symbol    ON trades(symbol);
-CREATE INDEX IF NOT EXISTS idx_equity_ts        ON equity_curve(ts);
-"""
-
-
-class TradeDB:
-    """Persistent trade log + analytics source."""
-
-    def __init__(self, db_path: str = "bbpro.db"):
-        self.db_path = Path(db_path)
-        import os
-        os.makedirs(str(self.db_path.parent), exist_ok=True)
-        self._init_schema()
-
-    @contextmanager
-    def _conn(self):
-        conn = sqlite3.connect(str(self.db_path))
+def init_db(db_path: str) -> bool:
+    """Initialize the database and create tables if they don't exist."""
+    try:
+        conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-
-    def _init_schema(self):
-        with self._conn() as c:
-            c.executescript(SCHEMA)
-        logger.info("Database ready: %s", self.db_path)
-
-    # ===================================================================
-    #  TRADES
-    # ===================================================================
-    def log_trade_open(self, *, symbol: str, side: str, volume_units: float,
-                       entry_price: float, sl_price: Optional[float],
-                       tp_price: Optional[float], sl_pips: Optional[float],
-                       tp_pips: Optional[float], atr: float, adx: Optional[float],
-                       rsi: Optional[float], label: str) -> int:
-        with self._conn() as c:
-            cur = c.execute(
-                """INSERT INTO trades
-                   (open_time, symbol, side, volume_units, entry_price,
-                    sl_price, tp_price, sl_pips, tp_pips, atr_at_open,
-                    adx_at_open, rsi_at_open, label)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (datetime.now(timezone.utc).isoformat(), symbol, side, volume_units,
-                 entry_price, sl_price, tp_price, sl_pips, tp_pips,
-                 atr, adx, rsi, label)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trades (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol        TEXT,
+                side          TEXT,
+                open_time     TEXT,
+                close_time    TEXT,
+                volume        REAL,
+                open_price    REAL,
+                close_price   REAL,
+                pips          REAL,
+                pnl           REAL,
+                close_reason  TEXT,
+                sl_pips       REAL,
+                tp_pips       REAL,
+                atr           REAL,
+                adx           REAL
             )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS equity_curve (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts              TEXT DEFAULT (datetime('now')),
+                equity          REAL,
+                balance         REAL,
+                open_positions  INTEGER DEFAULT 0
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS errors (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts      TEXT DEFAULT (datetime('now')),
+                message TEXT,
+                details TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+        logger.info("Database initialized: %s", db_path)
+        return True
+    except Exception as e:
+        logger.error("DB init error: %s", e)
+        return False
+
+
+@contextmanager
+def get_conn(db_path: str):
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def save_trade(db_path: str, trade: dict) -> Optional[int]:
+    """Save a closed trade to the DB. Returns row id."""
+    try:
+        with get_conn(db_path) as conn:
+            cur = conn.execute("""
+                INSERT INTO trades (symbol,side,open_time,close_time,volume,
+                    open_price,close_price,pips,pnl,close_reason,sl_pips,tp_pips,atr,adx)
+                VALUES (:symbol,:side,:open_time,:close_time,:volume,
+                    :open_price,:close_price,:pips,:pnl,:close_reason,:sl_pips,:tp_pips,:atr,:adx)
+            """, {
+                "symbol":      trade.get("symbol", ""),
+                "side":        trade.get("side", ""),
+                "open_time":   trade.get("open_time", ""),
+                "close_time":  trade.get("close_time", ""),
+                "volume":      trade.get("volume", 0),
+                "open_price":  trade.get("open_price", 0),
+                "close_price": trade.get("close_price", 0),
+                "pips":        trade.get("pips", 0),
+                "pnl":         trade.get("pnl", 0),
+                "close_reason":trade.get("close_reason", ""),
+                "sl_pips":     trade.get("sl_pips", 0),
+                "tp_pips":     trade.get("tp_pips", 0),
+                "atr":         trade.get("atr", 0),
+                "adx":         trade.get("adx", 0),
+            })
             return cur.lastrowid
+    except Exception as e:
+        logger.error("save_trade error: %s", e)
+        return None
 
-    def log_trade_close(self, *, trade_id: int, exit_price: float,
-                        close_reason: str, pips_result: float,
-                        profit_amount: float):
-        with self._conn() as c:
-            c.execute(
-                """UPDATE trades SET
-                       close_time = ?,
-                       exit_price = ?,
-                       close_reason = ?,
-                       pips_result = ?,
-                       profit_amount = ?
-                   WHERE id = ?""",
-                (datetime.now(timezone.utc).isoformat(), exit_price,
-                 close_reason, pips_result, profit_amount, trade_id)
+
+def save_equity(db_path: str, equity: float, balance: float, open_positions: int = 0):
+    """Snapshot the equity curve."""
+    try:
+        with get_conn(db_path) as conn:
+            conn.execute(
+                "INSERT INTO equity_curve (equity,balance,open_positions) VALUES (?,?,?)",
+                (equity, balance, open_positions)
             )
+    except Exception as e:
+        logger.error("save_equity error: %s", e)
 
-    # ===================================================================
-    #  EQUITY CURVE
-    # ===================================================================
-    def log_equity(self, *, equity: float, balance: float,
-                   open_positions: int, floating_pnl: float):
-        with self._conn() as c:
-            c.execute(
-                """INSERT INTO equity_curve
-                   (ts, equity, balance, open_positions, floating_pnl)
-                   VALUES (?,?,?,?,?)""",
-                (datetime.now(timezone.utc).isoformat(), equity, balance,
-                 open_positions, floating_pnl)
+
+def save_error(db_path: str, message: str, details: str = ""):
+    """Log an error event."""
+    try:
+        with get_conn(db_path) as conn:
+            conn.execute(
+                "INSERT INTO errors (message,details) VALUES (?,?)",
+                (message, details)
             )
+    except Exception as e:
+        logger.error("save_error error: %s", e)
 
-    # ===================================================================
-    #  SIGNALS
-    # ===================================================================
-    def log_signal(self, *, symbol: str, side: str, direction: str,
-                   accepted: bool, reject_reason: str = "",
-                   price: float = 0, rsi: float = 0, ema_fast: float = 0,
-                   ema_slow: float = 0, atr: float = 0, adx: float = 0):
-        with self._conn() as c:
-            c.execute(
-                """INSERT INTO signals
-                   (ts, symbol, side, direction, accepted, reject_reason,
-                    price, rsi, ema_fast, ema_slow, atr, adx)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (datetime.now(timezone.utc).isoformat(), symbol, side,
-                 direction, int(accepted), reject_reason, price, rsi,
-                 ema_fast, ema_slow, atr, adx)
-            )
 
-    # ===================================================================
-    #  ERRORS
-    # ===================================================================
-    def log_error(self, *, severity: str, category: str, message: str,
-                  traceback_str: str = ""):
-        with self._conn() as c:
-            c.execute(
-                """INSERT INTO errors (ts, severity, category, message, traceback)
-                   VALUES (?,?,?,?,?)""",
-                (datetime.now(timezone.utc).isoformat(), severity, category,
-                 message, traceback_str)
-            )
+def get_today_trades(db_path: str) -> list:
+    """Return all trades closed today."""
+    try:
+        with get_conn(db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM trades WHERE date(close_time) = date('now') ORDER BY id"
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception:
+        return []
 
-    # ===================================================================
-    #  QUERIES (for analytics)
-    # ===================================================================
-    def get_recent_trades(self, limit: int = 50) -> List[Dict[str, Any]]:
-        with self._conn() as c:
-            rows = c.execute(
+
+def get_all_trades(db_path: str, limit: int = 50) -> list:
+    try:
+        with get_conn(db_path) as conn:
+            rows = conn.execute(
                 "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
             return [dict(r) for r in rows]
+    except Exception:
+        return []
 
-    def get_equity_curve(self, since_hours: int = 24) -> List[Dict[str, Any]]:
-        with self._conn() as c:
-            rows = c.execute(
-                """SELECT * FROM equity_curve
-                   WHERE ts >= datetime('now', ?)
-                   ORDER BY ts ASC""",
-                (f"-{since_hours} hours",)
-            ).fetchall()
-            return [dict(r) for r in rows]
 
-    def get_error_count(self, since_hours: int = 24) -> int:
-        with self._conn() as c:
-            row = c.execute(
-                """SELECT COUNT(*) as n FROM errors
-                   WHERE ts >= datetime('now', ?)""",
-                (f"-{since_hours} hours",)
-            ).fetchone()
-            return row["n"] if row else 0
+class TradeDB:
+    """Compatibility wrapper used by main.py."""
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        init_db(db_path)
+
+    def log_trade(self, trade: dict):
+        return save_trade(self.db_path, trade)
+
+    def log_trade_open(self, symbol, side, volume_units, entry_price,
+                       sl_price, tp_price, sl_pips, tp_pips, atr, adx,
+                       rsi=None, label="") -> int:
+        """Called when a trade is opened (stores partial data)."""
+        import sqlite3, datetime
+        try:
+            with get_conn(self.db_path) as conn:
+                cur = conn.execute(
+                    """INSERT INTO trades (symbol,side,open_time,volume,open_price,sl_pips,tp_pips,atr,adx)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (symbol, side, datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                     volume_units, entry_price, sl_pips, tp_pips, atr, adx or 0)
+                )
+                return cur.lastrowid
+        except Exception as e:
+            logger.error("log_trade_open error: %s", e)
+            return 0
+
+    def update_trade_close(self, trade_id: int, close_price: float,
+                           pips: float, pnl: float, reason: str = ""):
+        """Update trade record when position closes."""
+        import datetime
+        try:
+            with get_conn(self.db_path) as conn:
+                conn.execute(
+                    """UPDATE trades SET close_time=?,close_price=?,pips=?,pnl=?,close_reason=?
+                       WHERE id=?""",
+                    (datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                     close_price, pips, pnl, reason, trade_id)
+                )
+        except Exception as e:
+            logger.error("update_trade_close error: %s", e)
+
+    def log_equity(self, equity: float, balance: float, open_pos: int = 0):
+        save_equity(self.db_path, equity, balance, open_pos)
+
+    def log_error(self, message: str, details: str = ""):
+        save_error(self.db_path, message, details)
+
+    def today_trades(self) -> list:
+        return get_today_trades(self.db_path)
+
+    def all_trades(self, limit: int = 50) -> list:
+        return get_all_trades(self.db_path, limit)

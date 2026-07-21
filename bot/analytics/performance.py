@@ -99,7 +99,7 @@ class PerformanceAnalyzer:
         if not rows:
             return PerformanceReport()
 
-        pnl_list = [float(r["profit_amount"] or 0) for r in rows]
+        pnl_list = [float((r["pnl"] if "pnl" in r.keys() else r["profit_amount"]) or 0) for r in rows]
         wins = [p for p in pnl_list if p > 0]
         losses = [p for p in pnl_list if p < 0]
         breakeven = [p for p in pnl_list if p == 0]

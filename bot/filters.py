@@ -1,223 +1,229 @@
 """
-filters.py
-==========
-Entry-confirmation filters for the Bollinger Breakout bot.
-
-Each filter returns True if the proposed trade is *allowed* by that filter.
-Filters are intentionally decoupled from data sources so they can be
-unit-tested in isolation.
-
-Filters implemented:
-    1. RSI momentum filter        - blocks buys in overbought, sells in oversold
-    2. EMA trend filter           - blocks trades against EMA50/EMA200 alignment
-    3. Volatility (ATR) filter    - blocks trades when ATR is out of range
-    4. Session / time-of-day      - blocks trades outside configured sessions
-    5. News blackout filter       - blocks trades around manual news times
-    6. Friday flat-close          - closes everything Friday evening (UTC)
+filters.py - BBPro Ultimate v2
+Multi-layer signal filters for higher win rate.
 """
+import logging
+from typing import Optional
 
-from datetime import datetime, time, timedelta, timezone
-from typing import List, Optional
-
-from config import BotConfig, TradeDirection
+logger = logging.getLogger(__name__)
 
 
-# ===========================================================================
-#  1. RSI MOMENTUM FILTER
-# ===========================================================================
-def rsi_filter_passes(cfg: BotConfig, direction: TradeDirection,
-                      rsi_value: float) -> bool:
+def spread_ok(spread_pips: float, max_spread: float = 3.0) -> bool:
+    return spread_pips <= max_spread
+
+
+def rsi_ok(rsi: float, side: str) -> bool:
+    """RSI filter: avoid overbought/oversold entries."""
+    if side.lower() == "buy":
+        return rsi < 70          # don't buy when overbought
+    else:
+        return rsi > 30          # don't sell when oversold
+
+
+def adx_ok(adx: float, min_adx: float = 20.0) -> bool:
+    """ADX filter: only trade trending markets."""
+    return adx >= min_adx
+
+
+def ema_trend_ok(close: float, ema50: float, ema200: float, side: str) -> bool:
+    """EMA trend filter: trade with the trend."""
+    if side.lower() == "buy":
+        return close > ema50 and ema50 > ema200
+    else:
+        return close < ema50 and ema50 < ema200
+
+
+def higher_tf_trend(bars_h4: list, side: str) -> bool:
     """
-    For BUY  : block if RSI >= overbought  (don't chase an overbought market)
-    For SELL : block if RSI <= oversold    (don't chase an oversold market)
+    H4 trend filter using EMA200.
+    bars_h4: list of dicts with 'close' key, newest last.
     """
-    if not cfg.enable_rsi_filter:
+    if not bars_h4 or len(bars_h4) < 200:
+        return True  # not enough data, allow trade
+    closes = [b["close"] if isinstance(b, dict) else b for b in bars_h4]
+    ema200 = sum(closes[-200:]) / 200
+    last_close = closes[-1]
+    if side.lower() == "buy":
+        return last_close > ema200
+    else:
+        return last_close < ema200
+
+
+def market_structure(bars: list, side: str) -> bool:
+    """
+    Market structure: BUY = HH/HL (uptrend), SELL = LH/LL (downtrend).
+    Uses last 4 swings from bars.
+    """
+    if not bars or len(bars) < 6:
         return True
+    closes = [b["close"] if isinstance(b, dict) else b for b in bars[-6:]]
+    highs  = [b["high"]  if isinstance(b, dict) else b for b in bars[-6:]]
+    lows   = [b["low"]   if isinstance(b, dict) else b for b in bars[-6:]]
+    if side.lower() == "buy":
+        # uptrend: recent high > prev high AND recent low > prev low
+        return highs[-1] > highs[-3] and lows[-1] > lows[-3]
+    else:
+        return highs[-1] < highs[-3] and lows[-1] < lows[-3]
 
-    if direction == TradeDirection.BUY:
-        if rsi_value >= cfg.rsi_overbought:
-            return False
-    else:  # SELL
-        if rsi_value <= cfg.rsi_oversold:
-            return False
+
+def volume_spike(bars: list, threshold: float = 1.5) -> bool:
+    """Detect volume spike above average (uses tick_volume if available)."""
+    if not bars or len(bars) < 10:
+        return True
+    vols = [b.get("volume", 1) if isinstance(b, dict) else 1 for b in bars[-10:]]
+    if all(v == 1 for v in vols):
+        return True  # no volume data available
+    avg = sum(vols[:-1]) / len(vols[:-1])
+    return vols[-1] >= avg * threshold
+
+
+def bb_squeeze(bars: list, period: int = 20) -> bool:
+    """
+    Bollinger Band Squeeze: detect when bands are narrow (low volatility → upcoming breakout).
+    Returns True if current bandwidth is below 50% of its 20-period average.
+    """
+    if not bars or len(bars) < period * 2:
+        return False
+    closes = [b["close"] if isinstance(b, dict) else b for b in bars]
+
+    def bw(subset):
+        mean = sum(subset) / len(subset)
+        std = (sum((x - mean) ** 2 for x in subset) / len(subset)) ** 0.5
+        return (2 * std) / mean if mean else 0
+
+    recent_bw = bw(closes[-period:])
+    historical_bws = [bw(closes[i:i+period]) for i in range(len(closes)-period*2, len(closes)-period)]
+    avg_bw = sum(historical_bws) / len(historical_bws) if historical_bws else recent_bw
+    return recent_bw < avg_bw * 0.5
+
+
+def news_blackout(side: str = "") -> bool:
+    """
+    Simple time-based news blackout.
+    Avoid trading 30 min before/after major news hours (8:30 UTC, 13:30 UTC).
+    Returns True if it's SAFE to trade.
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    h, m = now.hour, now.minute
+    # Major news windows: 08:25-09:00 UTC, 13:25-14:00 UTC
+    blackout_windows = [(8, 25, 9, 0), (13, 25, 14, 0)]
+    for (sh, sm, eh, em) in blackout_windows:
+        start_mins = sh * 60 + sm
+        end_mins   = eh * 60 + em
+        now_mins   = h  * 60 + m
+        if start_mins <= now_mins <= end_mins:
+            return False  # blackout
     return True
 
 
-# ===========================================================================
-#  2. EMA TREND FILTER
-# ===========================================================================
-def trend_filter_passes(cfg: BotConfig, direction: TradeDirection,
-                        price: float, ema_fast: float,
-                        ema_slow: float) -> bool:
+def multi_layer_filter(side: str, indicators: dict) -> dict:
     """
-    For BUY : price must be above EMA50  (and above EMA200 + EMA50>EMA200 if strict)
-    For SELL: price must be below EMA50  (and below EMA200 + EMA50<EMA200 if strict)
+    Master filter — checks all layers and returns score + decision.
+    
+    indicators dict keys:
+        rsi, adx, close, ema50, ema200, spread_pips, bars (list), bars_h4 (list)
+    
+    Returns:
+        { "pass": bool, "score": int (0-100), "reasons": [str] }
     """
-    if not cfg.enable_trend_filter:
-        return True
-
-    if direction == TradeDirection.BUY:
-        ok = price > ema_fast
-        if cfg.require_both_emas:
-            ok = ok and (price > ema_slow) and (ema_fast > ema_slow)
-        return ok
-    else:  # SELL
-        ok = price < ema_fast
-        if cfg.require_both_emas:
-            ok = ok and (price < ema_slow) and (ema_fast < ema_slow)
-        return ok
-
-
-# ===========================================================================
-#  3. ATR VOLATILITY FILTER
-# ===========================================================================
-def volatility_filter_passes(cfg: BotConfig, atr_pips: float) -> bool:
-    """Allow trade only if ATR is within [min, max] window (0 = disabled)."""
-    if cfg.min_atr_pips > 0 and atr_pips < cfg.min_atr_pips:
-        return False
-    if cfg.max_atr_pips > 0 and atr_pips > cfg.max_atr_pips:
-        return False
-    return True
-
-
-# ===========================================================================
-#  4. SESSION / TIME FILTER  (UTC)
-# ===========================================================================
-def _is_asian_session(hour: int) -> bool:
-    """Asian session: 23:00 - 08:00 UTC (wraps midnight)."""
-    return hour >= 23 or hour < 8
-
-
-def _is_london_session(hour: int) -> bool:
-    """London session: 07:00 - 16:00 UTC."""
-    return 7 <= hour < 16
-
-
-def _is_new_york_session(hour: int) -> bool:
-    """New York session: 12:00 - 21:00 UTC."""
-    return 12 <= hour < 21
-
-
-def _is_overlap(hour: int) -> bool:
-    """London-NY overlap: 12:00 - 16:00 UTC (highest liquidity)."""
-    return 12 <= hour < 16
-
-
-def session_filter_passes(cfg: BotConfig, now_utc: datetime) -> bool:
-    if not cfg.enable_session_filter:
-        return True
-
-    hour = now_utc.hour
-    dow  = now_utc.weekday()  # Mon=0 ... Sun=6
-
-    # Weekend block: Saturday fully, Sunday before 21:00 UTC
-    if dow == 5:  # Saturday
-        return False
-    if dow == 6 and hour < 21:  # Sunday pre-open
-        return False
-
-    # Friday filter
-    if dow == 4 and not cfg.trade_on_friday:
-        return False
-
-    # Overlap-only mode overrides individual session toggles
-    if cfg.only_overlap:
-        return _is_overlap(hour)
-
-    if cfg.allow_asian    and _is_asian_session(hour):    return True
-    if cfg.allow_london   and _is_london_session(hour):   return True
-    if cfg.allow_new_york and _is_new_york_session(hour): return True
-    return False
-
-
-# ===========================================================================
-#  5. NEWS BLACKOUT FILTER (manual UTC times)
-# ===========================================================================
-def parse_news_times(raw_list: List[str]) -> List[datetime]:
-    """Parse ['2026-07-07 12:30', ...] into timezone-aware UTC datetimes."""
-    out: List[datetime] = []
-    for s in raw_list:
-        s = s.strip()
-        if not s:
-            continue
-        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S",
-                    "%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S"):
-            try:
-                dt = datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
-                out.append(dt)
-                break
-            except ValueError:
-                continue
-        else:
-            print(f"[NewsFilter] WARNING: could not parse '{s}'")
-    return out
-
-
-def news_filter_passes(cfg: BotConfig, parsed_news: List[datetime],
-                       now_utc: datetime) -> bool:
-    """Returns True if trading is ALLOWED (i.e. NOT in blackout window)."""
-    if not cfg.enable_news_filter or not parsed_news:
-        return True
-    for news_time in parsed_news:
-        delta_min = (news_time - now_utc).total_seconds() / 60.0
-        # Block from (news - before) to (news + after)
-        if -cfg.news_block_after_min <= delta_min <= cfg.news_block_before_min:
-            return False
-    return True
-
-
-# ===========================================================================
-#  6. FRIDAY FLAT-CLOSE HELPER
-# ===========================================================================
-def should_close_all_on_friday(cfg: BotConfig, now_utc: datetime) -> bool:
-    """True if it's Friday and past the configured flat-close time."""
-    if not cfg.trade_on_friday:
-        return False
-    if now_utc.weekday() != 4:  # not Friday
-        return False
-    try:
-        hh, mm = [int(x) for x in cfg.friday_close_time.split(":")]
-        close_t = time(hh, mm)
-        return now_utc.time() >= close_t
-    except (ValueError, AttributeError):
-        return False
-
-
-# ===========================================================================
-#  AGGREGATE: full entry check
-# ===========================================================================
-def all_entry_filters_pass(
-    cfg: BotConfig,
-    direction: TradeDirection,
-    *,
-    rsi_value: float,
-    price: float,
-    ema_fast: float,
-    ema_slow: float,
-    atr_pips: float,
-    now_utc: datetime,
-    parsed_news: List[datetime],
-    debug: bool = False,
-) -> bool:
-    """Run all entry filters; return True only if every one passes."""
+    checks = {}
     reasons = []
 
-    if not rsi_filter_passes(cfg, direction, rsi_value):
-        reasons.append(f"RSI {rsi_value:.1f} blocks {direction.value}")
+    # 1. RSI filter
+    rsi = indicators.get("rsi", 50)
+    checks["rsi"] = rsi_ok(rsi, side)
+    if not checks["rsi"]:
+        reasons.append(f"RSI={rsi:.1f} في منطقة مشبعة")
 
-    if not trend_filter_passes(cfg, direction, price, ema_fast, ema_slow):
-        reasons.append(f"Trend blocks {direction.value}")
+    # 2. ADX filter
+    adx = indicators.get("adx", 25)
+    checks["adx"] = adx_ok(adx)
+    if not checks["adx"]:
+        reasons.append(f"ADX={adx:.1f} سوق رينج")
 
-    if not volatility_filter_passes(cfg, atr_pips):
-        reasons.append(f"ATR {atr_pips:.1f} pips out of range")
+    # 3. EMA trend
+    close  = indicators.get("close", 0)
+    ema50  = indicators.get("ema50", 0)
+    ema200 = indicators.get("ema200", 0)
+    if close and ema50 and ema200:
+        checks["ema_trend"] = ema_trend_ok(close, ema50, ema200, side)
+        if not checks["ema_trend"]:
+            reasons.append("EMA trend عكسي")
+    else:
+        checks["ema_trend"] = True  # skip if no data
 
-    if not session_filter_passes(cfg, now_utc):
-        reasons.append("Outside allowed session")
+    # 4. Spread
+    spread = indicators.get("spread_pips", 1.0)
+    checks["spread"] = spread_ok(spread)
+    if not checks["spread"]:
+        reasons.append(f"Spread={spread:.1f} عالي")
 
-    if not news_filter_passes(cfg, parsed_news, now_utc):
-        reasons.append("News blackout window")
+    # 5. News blackout
+    checks["news"] = news_blackout(side)
+    if not checks["news"]:
+        reasons.append("نافذة أخبار")
 
-    if reasons and debug:
-        print(f"[Filters] {direction.value} blocked: {' | '.join(reasons)}")
+    # 6. Market structure (if bars available)
+    bars = indicators.get("bars", [])
+    if len(bars) >= 6:
+        checks["structure"] = market_structure(bars, side)
+        if not checks["structure"]:
+            reasons.append("هيكل السوق عكسي")
+    else:
+        checks["structure"] = True
 
-    return len(reasons) == 0
+    # 7. H4 trend (if h4 bars available)
+    bars_h4 = indicators.get("bars_h4", [])
+    if len(bars_h4) >= 200:
+        checks["h4_trend"] = higher_tf_trend(bars_h4, side)
+        if not checks["h4_trend"]:
+            reasons.append("H4 trend عكسي")
+    else:
+        checks["h4_trend"] = True
+
+    # Score: each check = ~14 points
+    passed = sum(1 for v in checks.values() if v)
+    total  = len(checks)
+    score  = int((passed / total) * 100)
+
+    # Need at least 4/7 checks to pass (score >= 57)
+    decision = (score >= 57)
+
+    if decision:
+        logger.info("Signal PASSED: score=%d/100 (%d/%d checks) side=%s", score, passed, total, side)
+    else:
+        logger.info("Signal BLOCKED: score=%d/100, reasons=%s", score, reasons)
+
+    return {"pass": decision, "score": score, "reasons": reasons, "checks": checks}
+
+
+# ── Compatibility aliases (used by main.py imports) ──────────────────────────
+
+def all_entry_filters_pass(side: str, indicators: dict) -> bool:
+    """Legacy function: calls multi_layer_filter and returns bool."""
+    result = multi_layer_filter(side, indicators)
+    return result["pass"]
+
+
+def parse_news_times(news_str: str) -> list:
+    """Parse comma-separated news time strings like '08:30,13:30'."""
+    times = []
+    if not news_str:
+        return times
+    for t in news_str.split(","):
+        t = t.strip()
+        try:
+            parts = t.split(":")
+            times.append((int(parts[0]), int(parts[1])))
+        except Exception:
+            pass
+    return times
+
+
+def should_close_all_on_friday(now=None) -> bool:
+    """Returns True on Fridays after 20:00 UTC."""
+    from datetime import datetime, timezone
+    if now is None:
+        now = datetime.now(timezone.utc)
+    return now.weekday() == 4 and now.hour >= 20

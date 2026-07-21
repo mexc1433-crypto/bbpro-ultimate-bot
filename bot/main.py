@@ -275,6 +275,13 @@ class BollingerBreakoutBotV2:
                 )
             return
 
+        # Fetch H4 bars
+        try:
+            bars_h4 = await self.client.get_recent_bars(self.cfg.symbol, "h4", count=250)
+        except Exception as e:
+            logger.warning("Failed to fetch H4 bars: %s", e)
+            bars_h4 = []
+
         # Compute indicators
         closes = np.array([b.close for b in self.bars])
         highs  = np.array([b.high  for b in self.bars])
@@ -292,24 +299,27 @@ class BollingerBreakoutBotV2:
         ema_f      = ind["ema_fast"][idx]
         ema_s      = ind["ema_slow"][idx]
         atr_now    = ind["atr"][idx]
+        adx_now    = ind["adx"][idx] if "adx" in ind else 0.0
+        if np.isnan(adx_now):
+            adx_now = 0.0
 
         if any(np.isnan([bb_upper, bb_lower, rsi_now, ema_f, ema_s, atr_now])):
             return
 
         atr_pips = atr_now / self.symbol_info.pip_size
 
-        # Spread guard
-        if self.cfg.max_spread_pips > 0:
-            bid, ask = await self.client.get_quote(self.cfg.symbol)
-            if bid and ask:
-                spread_pips = (ask - bid) / self.symbol_info.pip_size
-                if spread_pips > self.cfg.max_spread_pips:
-                    if self.cfg.show_debug:
-                        logger.info("Spread too wide: %.1f > %.1f", spread_pips, self.cfg.max_spread_pips)
-                    return
+        # Spread guard / calculation
+        spread_pips = 1.0  # default/fallback if not available
+        bid, ask = await self.client.get_quote(self.cfg.symbol)
+        if bid and ask:
+            spread_pips = (ask - bid) / self.symbol_info.pip_size
 
-        # Conflict-gate (simplified - assume 0 open positions for stub mode)
-        # In production, check live positions cache
+        # Keep original strict spread guard if config has max_spread_pips > 0
+        if self.cfg.max_spread_pips > 0:
+            if spread_pips > self.cfg.max_spread_pips:
+                if self.cfg.show_debug:
+                    logger.info("Spread too wide: %.1f > %.1f", spread_pips, self.cfg.max_spread_pips)
+                return
 
         # Check both directions
         for direction in (TradeDirection.BUY, TradeDirection.SELL):
@@ -318,11 +328,6 @@ class BollingerBreakoutBotV2:
                                             bb_upper_p, bb_lower_p)
             if not breakout:
                 continue
-
-            # NEW: ADX filter
-            if self.cfg.enable_adx_filter:
-                # ADX not in our indicators.py - skip for now, would need to add
-                pass
 
             # NEW: Volatility ratio
             if self.cfg.min_volatility_ratio > 0:
@@ -335,25 +340,25 @@ class BollingerBreakoutBotV2:
                             logger.info("VolRatio too low: %.2f < %.2f", ratio, self.cfg.min_volatility_ratio)
                         continue
 
-            ok = all_entry_filters_pass(
-                self.cfg, direction,
-                rsi_value=rsi_now,
-                price=close_now,
-                ema_fast=ema_f, ema_slow=ema_s,
-                atr_pips=atr_pips,
-                now_utc=now_utc,
-                parsed_news=self.news_times,
-                debug=self.cfg.show_debug,
-            )
+            # Prepare indicators dict for our multi-layer filter
+            indicators_dict = {
+                "bars_h4": bars_h4,
+                "rsi": rsi_now,
+                "adx": adx_now,
+                "spread": spread_pips,
+                "time": now_utc,
+            }
+
+            ok, score = self._evaluate_signal(direction, indicators_dict)
             if not ok:
                 # Log rejected signal
                 if self.db:
                     self.db.log_signal(
                         symbol=self.cfg.symbol, side=direction.value,
                         direction=direction.value, accepted=False,
-                        reject_reason="filters", price=close_now,
+                        reject_reason=f"filters_score_{score:.1f}", price=close_now,
                         rsi=rsi_now, ema_fast=ema_f, ema_slow=ema_s,
-                        atr=atr_now, adx=0,
+                        atr=atr_now, adx=adx_now,
                     )
                 continue
 
@@ -408,21 +413,40 @@ class BollingerBreakoutBotV2:
                     symbol=self.cfg.symbol, side=side, volume_units=volume,
                     entry_price=close_now, sl_price=sl_tp.sl_price,
                     tp_price=sl_tp.tp_price, sl_pips=sl_tp.sl_pips,
-                    tp_pips=sl_tp.tp_pips, atr=atr_now, adx=0,
+                    tp_pips=sl_tp.tp_pips, atr=atr_now, adx=adx_now,
                     rsi=rsi_now, label=self.cfg.bot_label,
                 )
             self.daily_state.daily_trade_count += 1
-            self.notifier.notify_trade_opened(
-                side, self.cfg.symbol, volume,
-                sl_tp.sl_pips, sl_tp.tp_pips, atr_now,
+            # Professional signal message
+            self.notifier.send_trade_signal(
+                symbol=self.cfg.symbol, side=side,
+                price=close_now,
+                sl=sl_tp.sl_price, tp=sl_tp.tp_price,
+                volume_lots=volume / 100000.0,
             )
-            logger.info("%s OPENED | vol=%.2fu | SL=%.1fp | TP=%.1fp | ATR=%.5f",
-                        side.upper(), volume, sl_tp.sl_pips, sl_tp.tp_pips, atr_now)
+            logger.info("%s OPENED | vol=%.2fu | SL=%.1fp | TP=%.1fp | ATR=%.5f | ADX=%.1f | Score=%.1f",
+                        side.upper(), volume, sl_tp.sl_pips, sl_tp.tp_pips, atr_now, adx_now, score)
             break
 
-    # ------------------------------------------------------------------
-    #  BREAKOUT DETECTION
-    # ------------------------------------------------------------------
+    def _evaluate_signal(self, direction: TradeDirection, indicators_dict: dict) -> tuple:
+        """
+        Evaluates entry signal using multi-layer filter.
+        Returns (bool, confluence_score).
+        """
+        from filters import multi_layer_filter
+        side = "buy" if direction.value == 1 else "sell"
+        result = multi_layer_filter(side, indicators_dict)
+        score = result.get("score", 0)
+        passed = result.get("pass", False)
+        # Update web dashboard confluence score
+        try:
+            from web.monitor import _app_instance
+            if _app_instance:
+                _app_instance.config["CONFLUENCE_SCORE"] = score
+        except Exception:
+            pass
+        return passed, score
+
     def _check_breakout(self, direction: TradeDirection,
                         close_now: float, close_prev: float,
                         bb_upper: float, bb_lower: float,

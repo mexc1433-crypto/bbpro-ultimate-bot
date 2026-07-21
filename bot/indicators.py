@@ -396,6 +396,7 @@ def compute_all_indicators(high: np.ndarray, low: np.ndarray, close: np.ndarray,
         "ema_fast":    ema_fast,
         "ema_slow":    ema_slow,
         "atr":         atr_arr,
+        "adx":         calc_adx(high, low, close, getattr(cfg, "adx_period", 14)),
     }
 
 
@@ -514,3 +515,211 @@ def calc_heikin_ashi(opens, highs, lows, closes):
     ha_high = np.maximum(np.maximum(np.array(highs), ha_open), ha_close)
     ha_low = np.minimum(np.minimum(np.array(lows), ha_open), ha_close)
     return ha_open, ha_high, ha_low, ha_close
+
+
+# ---------------------------------------------------------------------------
+#  ADDED BY UPGRADE: H4 Trend, Market Structure, Volume Spike, BB Squeeze, ADX
+# ---------------------------------------------------------------------------
+
+def higher_timeframe_trend(bars_h4) -> str:
+    """
+    Determines the trend on H4 using EMA200.
+    Returns "bullish" if close > EMA200, "bearish" if close < EMA200, or "flat".
+    """
+    if isinstance(bars_h4, np.ndarray):
+        closes = bars_h4
+    elif isinstance(bars_h4, list):
+        if len(bars_h4) > 0 and hasattr(bars_h4[0], "close"):
+            closes = np.array([b.close for b in bars_h4])
+        elif len(bars_h4) > 0 and isinstance(bars_h4[0], dict):
+            closes = np.array([b["close"] for b in bars_h4])
+        else:
+            closes = np.array(bars_h4)
+    else:
+        closes = np.array(bars_h4)
+
+    if len(closes) < 200:
+        return "flat"
+    
+    ema_200 = ema(closes, 200)
+    if np.isnan(ema_200[-1]):
+        return "flat"
+    
+    if closes[-1] > ema_200[-1]:
+        return "bullish"
+    elif closes[-1] < ema_200[-1]:
+        return "bearish"
+    return "flat"
+
+
+def market_structure(bars) -> str:
+    """
+    Determines HH/HL (uptrend) or LH/LL (downtrend) or 'ranging'.
+    """
+    if isinstance(bars, np.ndarray):
+        highs = bars
+        lows = bars
+    elif isinstance(bars, list):
+        if len(bars) > 0 and hasattr(bars[0], "high"):
+            highs = np.array([b.high for b in bars])
+            lows = np.array([b.low for b in bars])
+        elif len(bars) > 0 and isinstance(bars[0], dict):
+            highs = np.array([b["high"] for b in bars])
+            lows = np.array([b["low"] for b in bars])
+        else:
+            highs = np.array(bars)
+            lows = np.array(bars)
+    else:
+        highs = np.array(bars)
+        lows = np.array(bars)
+
+    if len(highs) < 15:
+        return "ranging"
+
+    swing_highs = []
+    swing_lows = []
+    for i in range(2, len(highs) - 2):
+        if highs[i] == np.max(highs[i-2 : i+3]):
+            swing_highs.append(highs[i])
+        if lows[i] == np.min(lows[i-2 : i+3]):
+            swing_lows.append(lows[i])
+
+    if len(swing_highs) < 2 or len(swing_lows) < 2:
+        return "ranging"
+
+    last_h1 = swing_highs[-1]
+    last_h2 = swing_highs[-2]
+    last_l1 = swing_lows[-1]
+    last_l2 = swing_lows[-2]
+
+    if last_h1 > last_h2 and last_l1 > last_l2:
+        return "uptrend"
+    elif last_h1 < last_h2 and last_l1 < last_l2:
+        return "downtrend"
+    return "ranging"
+
+
+def volume_spike(bars, threshold: float = 1.5) -> bool:
+    """
+    Detects if the latest volume is above threshold * average volume.
+    """
+    if isinstance(bars, np.ndarray):
+        volumes = bars
+    elif isinstance(bars, list):
+        if len(bars) > 0 and hasattr(bars[0], "volume"):
+            volumes = np.array([b.volume for b in bars])
+        elif len(bars) > 0 and isinstance(bars[0], dict):
+            volumes = np.array([b["volume"] for b in bars])
+        else:
+            volumes = np.array(bars)
+    else:
+        volumes = np.array(bars)
+
+    if len(volumes) < 21:
+        return False
+
+    latest_vol = volumes[-1]
+    avg_vol = np.mean(volumes[-21:-1])
+    if avg_vol == 0:
+        return False
+    return bool(latest_vol > threshold * avg_vol)
+
+
+def bb_squeeze(bars, period: int = 20) -> bool:
+    """
+    Detects Bollinger Bands squeeze.
+    """
+    if isinstance(bars, np.ndarray):
+        closes = bars
+    elif isinstance(bars, list):
+        if len(bars) > 0 and hasattr(bars[0], "close"):
+            closes = np.array([b.close for b in bars])
+        elif len(bars) > 0 and isinstance(bars[0], dict):
+            closes = np.array([b["close"] for b in bars])
+        else:
+            closes = np.array(bars)
+    else:
+        closes = np.array(bars)
+
+    if len(closes) < period * 2:
+        return False
+
+    middle, upper, lower = bollinger_bands(closes, period=period)
+    bandwidth = (upper - lower) / middle
+    valid_bw = bandwidth[~np.isnan(bandwidth)]
+    if len(valid_bw) < period:
+        return False
+    
+    current_bw = valid_bw[-1]
+    avg_bw = np.mean(valid_bw[-period:])
+    return bool(current_bw < avg_bw)
+
+
+def calc_adx(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> np.ndarray:
+    """
+    Calculates Average Directional Index (ADX) using Wilder's smoothing.
+    """
+    n = len(close)
+    adx_out = np.full(n, np.nan, dtype=float)
+    if n < 2 * period:
+        return adx_out
+
+    tr = np.zeros(n)
+    plus_dm = np.zeros(n)
+    minus_dm = np.zeros(n)
+
+    tr[0] = high[0] - low[0]
+    for i in range(1, n):
+        hl = high[i] - low[i]
+        hc = abs(high[i] - close[i - 1])
+        lc = abs(low[i] - close[i - 1])
+        tr[i] = max(hl, hc, lc)
+
+        up = high[i] - high[i - 1]
+        down = low[i - 1] - low[i]
+
+        if up > down and up > 0:
+            plus_dm[i] = up
+        else:
+            plus_dm[i] = 0.0
+
+        if down > up and down > 0:
+            minus_dm[i] = down
+        else:
+            minus_dm[i] = 0.0
+
+    smoothed_tr = _wilder_smoothing(tr, period)
+    smoothed_plus_dm = _wilder_smoothing(plus_dm, period)
+    smoothed_minus_dm = _wilder_smoothing(minus_dm, period)
+
+    dx = np.full(n, np.nan, dtype=float)
+    for i in range(period - 1, n):
+        tr_val = smoothed_tr[i]
+        p_dm = smoothed_plus_dm[i]
+        m_dm = smoothed_minus_dm[i]
+
+        if tr_val == 0 or np.isnan(tr_val) or np.isnan(p_dm) or np.isnan(m_dm):
+            plus_di = 0.0
+            minus_di = 0.0
+        else:
+            plus_di = 100.0 * (p_dm / tr_val)
+            minus_di = 100.0 * (m_dm / tr_val)
+
+        denom = plus_di + minus_di
+        if denom == 0:
+            dx_val = 0.0
+        else:
+            dx_val = 100.0 * abs(plus_di - minus_di) / denom
+        dx[i] = dx_val
+
+    non_nan_indices = np.where(~np.isnan(dx))[0]
+    if len(non_nan_indices) < period:
+        return adx_out
+    
+    first_idx = non_nan_indices[0]
+    seed = np.mean(dx[first_idx : first_idx + period])
+    adx_out[first_idx + period - 1] = seed
+    for i in range(first_idx + period, n):
+        adx_out[i] = (adx_out[i - 1] * (period - 1) + dx[i]) / period
+
+    return adx_out

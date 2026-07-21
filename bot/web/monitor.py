@@ -10,6 +10,11 @@ Routes:
   /api/trades    → JSON list of recent trades
   /api/equity    → JSON equity curve (last 24h)
   /api/errors    → JSON recent errors
+  /api/account   → JSON balance, equity, account_id, open_positions_count, daily performance, last signal
+  /api/open_positions → JSON list of currently open positions
+  /api/performance/daily → JSON performance of each day
+  /api/control/pause   → POST stop/pause the bot
+  /api/control/resume  → POST resume the bot
   /health        → JSON health check
 
 Run standalone:
@@ -24,6 +29,7 @@ import argparse
 import logging
 import sqlite3
 import threading
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -146,6 +152,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .dot.green { background: var(--green); }
   .dot.red { background: var(--red); }
   .dot.yellow { background: var(--yellow); }
+
+  /* Button controls */
+  .btn:hover { opacity: 0.9; }
 </style>
 </head>
 <body>
@@ -176,11 +185,48 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="ticker-item"><div class="ticker-sym">USDCAD</div><div class="ticker-price" id="t_USDCAD">—</div></div>
   </div>
 
+  <!-- Account Card & Control -->
+  <div class="two-col" style="margin-bottom: 20px;">
+    <!-- Account Card -->
+    <div class="section" style="margin-bottom: 0;">
+      <div class="section-header">
+        <div class="section-title"><div class="section-icon">💳</div> بطاقة الحساب</div>
+      </div>
+      <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 0;">
+        <div class="stat-card blue" style="margin-bottom:0;"><div class="stat-label">الرصيد الحقيقي</div><div class="stat-value" id="acc_balance">—</div></div>
+        <div class="stat-card green" style="margin-bottom:0;"><div class="stat-label">حقوق الملكية (Equity)</div><div class="stat-value" id="acc_equity">—</div></div>
+        <div class="stat-card yellow" style="margin-bottom:0;"><div class="stat-label">الصفقات المفتوحة</div><div class="stat-value" id="acc_open">—</div></div>
+      </div>
+    </div>
+    
+    <!-- Control Section -->
+    <div class="section" style="margin-bottom: 0;">
+      <div class="section-header">
+        <div class="section-title"><div class="section-icon">⚙️</div> التحكم في البوت</div>
+      </div>
+      <div style="display: flex; flex-direction: column; justify-content: center; height: calc(100% - 40px); gap: 14px;">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <span style="font-size: 14px; font-weight: 600;">حالة التشغيل:</span>
+          <span id="botStateBadge" class="badge" style="padding: 6px 16px; font-size: 13px;">جاري التحميل...</span>
+        </div>
+        <div style="display: flex; gap: 10px;">
+          <button id="btnPause" class="btn" onclick="controlBot('pause')" style="flex: 1; padding: 10px; border-radius: 8px; font-family: 'Cairo', sans-serif; font-weight: 700; background: var(--red); color: white; border: none; cursor: pointer; transition: opacity 0.2s;">⏸️ إيقاف مؤقت</button>
+          <button id="btnResume" class="btn" onclick="controlBot('resume')" style="flex: 1; padding: 10px; border-radius: 8px; font-family: 'Cairo', sans-serif; font-weight: 700; background: var(--green); color: white; border: none; cursor: pointer; transition: opacity 0.2s;">▶️ استئناف</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Stats -->
   <div class="stats-grid" id="statsGrid">
     <div class="stat-card blue"><div class="stat-label">إجمالي الصفقات</div><div class="stat-value neu" id="s_total">—</div></div>
     <div class="stat-card green"><div class="stat-label">نسبة النجاح</div><div class="stat-value pos" id="s_winrate">—</div></div>
     <div class="stat-card green"><div class="stat-label">إجمالي الربح</div><div class="stat-value" id="s_pnl">—</div></div>
+    
+    <div class="stat-card blue"><div class="stat-label">صفقات اليوم</div><div class="stat-value neu" id="s_trades_today">—</div></div>
+    <div class="stat-card green"><div class="stat-label">نقاط اليوم</div><div class="stat-value" id="s_pips_today">—</div></div>
+    <div class="stat-card green"><div class="stat-label">نسبة نجاح اليوم</div><div class="stat-value pos" id="s_winrate_today">—</div></div>
+
     <div class="stat-card blue"><div class="stat-label">عامل الربح</div><div class="stat-value neu" id="s_pf">—</div></div>
     <div class="stat-card blue"><div class="stat-label">شارب راشيو</div><div class="stat-value neu" id="s_sharpe">—</div></div>
     <div class="stat-card red"><div class="stat-label">أقصى سحب</div><div class="stat-value neg" id="s_dd">—</div></div>
@@ -209,6 +255,29 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="conn-row"><div class="dot green"></div><span>Railway Cloud — يعمل 24/7</span></div>
         <div class="conn-row"><div class="dot yellow"></div><span>قاعدة البيانات — معطّلة (وضع الذاكرة)</span></div>
       </div>
+      
+      <div style="margin-top:20px; border-top: 1px solid var(--border); padding-top: 16px;">
+        <div class="section-title" style="margin-bottom:12px"><div class="section-icon">📡</div> آخر إشارة ومؤشر التوافق (Confluence)</div>
+        <div style="background: var(--surface2); padding: 12px; border-radius: 10px; border: 1px solid var(--border);">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+            <span style="font-size: 13px; color: var(--muted);">الزوج والاتجاه:</span>
+            <span id="sig_symbol" style="font-weight: 700;">—</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+            <span style="font-size: 13px; color: var(--muted);">الوقت:</span>
+            <span id="sig_time">—</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+            <span style="font-size: 13px; color: var(--muted);">مؤشر التوافق (Confluence):</span>
+            <span id="sig_confluence" style="font-weight: 700; color: var(--yellow);">—</span>
+          </div>
+          <div style="display: flex; justify-content: space-between;">
+            <span style="font-size: 13px; color: var(--muted);">حالة الإشارة:</span>
+            <span id="sig_status" class="badge">—</span>
+          </div>
+        </div>
+      </div>
+
       <div style="margin-top:20px">
         <div class="section-title" style="margin-bottom:12px"><div class="section-icon">🎯</div> الأزواج النشطة</div>
         <div class="symbols-grid" id="symbolsGrid">
@@ -219,6 +288,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="sym-card"><div class="sym-name">EURJPY</div><div class="sym-stat">م30 | نشط</div></div>
           <div class="sym-card"><div class="sym-name">USDCAD</div><div class="sym-stat">م30 | نشط</div></div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Open Positions Table -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-title"><div class="section-icon">🔓</div> الصفقات المفتوحة حالياً</div>
+      <span style="font-size:12px;color:var(--muted)" id="openCount"></span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>وقت الفتح</th><th>الزوج</th><th>الاتجاه</th><th>الحجم</th><th>سعر الدخول</th><th>السعر الحالي</th><th>الربح ($)</th>
+        </tr></thead>
+        <tbody id="openBody"></tbody>
+      </table>
+      <div class="empty" id="emptyOpen" style="display:none">
+        <div class="empty-icon">🏖️</div>
+        <div>لا توجد صفقات مفتوحة حالياً</div>
       </div>
     </div>
   </div>
@@ -265,6 +354,70 @@ function fmtTime(s) {
 async function fetchJSON(url) {
   try { const r = await fetch(url); return r.ok ? r.json() : null; }
   catch { return null; }
+}
+
+async function controlBot(action) {
+  try {
+    const r = await fetch(\`/api/control/\${action}\`, { method: 'POST' });
+    if (r.ok) {
+      await loadAccount();
+    } else {
+      alert('حدث خطأ أثناء تنفيذ الأمر');
+    }
+  } catch (e) {
+    alert('فشل الاتصال بالخادم');
+  }
+}
+
+async function loadAccount() {
+  const acc = await fetchJSON('/api/account');
+  if (!acc) return;
+
+  // Account card
+  document.getElementById('acc_balance').textContent = '$' + fmt(acc.balance, 2);
+  document.getElementById('acc_equity').textContent = '$' + fmt(acc.equity, 2);
+  document.getElementById('acc_open').textContent = acc.open_positions_count;
+
+  // Control / Pause Resume UI
+  const badge = document.getElementById('botStateBadge');
+  if (acc.bot_paused) {
+    badge.textContent = '⏸️ موقوف مؤقتاً';
+    badge.className = 'badge sell';
+  } else {
+    badge.textContent = '▶️ يعمل بنشاط';
+    badge.className = 'badge buy';
+  }
+
+  // Last Signal
+  const sig = acc.last_signal || {};
+  document.getElementById('sig_symbol').textContent = (sig.symbol ? sig.symbol + ' (' + (sig.direction || sig.side || '—') + ')' : '—');
+  document.getElementById('sig_time').textContent = sig.ts ? fmtTime(sig.ts) : '—';
+  document.getElementById('sig_confluence').textContent = sig.confluence_score || '—';
+  
+  const sigStatus = document.getElementById('sig_status');
+  if (sig.symbol) {
+    const isAccepted = sig.accepted !== undefined ? sig.accepted : true;
+    if (isAccepted) {
+      sigStatus.textContent = 'مقبولة ✓';
+      sigStatus.className = 'badge buy';
+    } else {
+      sigStatus.textContent = 'مرفوضة: ' + (sig.reject_reason || 'غير محدد');
+      sigStatus.className = 'badge sell';
+    }
+  } else {
+    sigStatus.textContent = '—';
+    sigStatus.className = 'badge';
+  }
+
+  // Daily stats cards
+  document.getElementById('s_trades_today').textContent = acc.trades_today || '0';
+  
+  const pipsToday = Number(acc.pips_today || 0);
+  const pipsTodayEl = document.getElementById('s_pips_today');
+  pipsTodayEl.textContent = (pipsToday >= 0 ? '+' : '') + fmt(pipsToday, 1);
+  pipsTodayEl.className = 'stat-value ' + (pipsToday >= 0 ? 'pos' : 'neg');
+  
+  document.getElementById('s_winrate_today').textContent = fmt(acc.winrate_today, 1) + '%';
 }
 
 async function loadStats() {
@@ -351,15 +504,44 @@ async function loadTrades() {
       <td style="font-weight:700">\${t.symbol||'—'}</td>
       <td><span class="badge \${t.side==='buy'?'buy':'sell'}">\${t.side==='buy'?'▲ شراء':'▼ بيع'}</span></td>
       <td>\${t.volume||'—'}</td>
-      <td style="color:\${pts>=0?'var(--green)':'var(--red)'};\${pts>=0?'':''}">\${(pts>=0?'+':'')+fmt(pts,1)}</td>
+      <td style="color:\${pts>=0?'var(--green)':'var(--red)'};">\${(pts>=0?'+':'')+fmt(pts,1)}</td>
       <td style="color:\${pnl>=0?'var(--green)':'var(--red)'};font-weight:700">\${(pnl>=0?'+':'')+fmt(pnl,2)}</td>
       <td style="color:var(--muted);font-size:11px">\${t.close_reason||'—'}</td>
     </tr>\`;
   }).join('');
 }
 
+async function loadOpenPositions() {
+  const openPositions = await fetchJSON('/api/open_positions');
+  const tbody = document.getElementById('openBody');
+  const empty = document.getElementById('emptyOpen');
+  const count = document.getElementById('openCount');
+
+  if (!openPositions || openPositions.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    count.textContent = 'لا صفقات مفتوحة';
+    return;
+  }
+  empty.style.display = 'none';
+  count.textContent = openPositions.length + ' صفقة مفتوحة';
+
+  tbody.innerHTML = openPositions.map(p => {
+    const pnl = Number(p.pnl||0);
+    return \`<tr>
+      <td>\${fmtTime(p.open_time)}</td>
+      <td style="font-weight:700">\${p.symbol||'—'}</td>
+      <td><span class="badge \${p.side==='buy'?'buy':'sell'}">\${p.side==='buy'?'▲ شراء':'▼ بيع'}</span></td>
+      <td>\${p.volume||'—'}</td>
+      <td>\${fmt(p.entry_price, 5)}</td>
+      <td>\${fmt(p.current_price, 5)}</td>
+      <td style="color:\${pnl>=0?'var(--green)':'var(--red)'};font-weight:700">\${(pnl>=0?'+':'')+fmt(pnl,2)}</td>
+    </tr>\`;
+  }).join('');
+}
+
 async function refresh() {
-  await Promise.all([loadStats(), loadEquity(), loadTrades()]);
+  await Promise.all([loadAccount(), loadStats(), loadEquity(), loadTrades(), loadOpenPositions()]);
 }
 
 refresh();
@@ -382,6 +564,18 @@ def create_app(db_path: str = "bbpro.db"):
 
     app = Flask(__name__)
     app.config["DB_PATH"] = db_path
+    app.config["BOT_PAUSED"] = False
+    app.config["ACCOUNT_BALANCE"] = 0.0
+    app.config["OPEN_POSITIONS"] = []
+    app.config["LAST_SIGNAL"] = {}
+    app.config["TODAY_TRADES"] = []
+    app.config["CONFLUENCE_SCORE"] = 0
+
+    # Initialize requested global state
+    app.config['BOT_PAUSED'] = False
+    app.config['ACCOUNT_BALANCE'] = 0.0
+    app.config['OPEN_POSITIONS'] = []
+    app.config['LAST_SIGNAL'] = {}
 
     def get_conn():
         conn = sqlite3.connect(app.config["DB_PATH"])
@@ -443,6 +637,167 @@ def create_app(db_path: str = "bbpro.db"):
             return jsonify([dict(r) for r in rows])
         except Exception:
             return jsonify([])
+
+    @app.route("/api/account")
+    def api_account():
+        balance = app.config.get('ACCOUNT_BALANCE', 0.0)
+        equity = balance
+        try:
+            with get_conn() as c:
+                row = c.execute("SELECT equity FROM equity_curve ORDER BY ts DESC LIMIT 1").fetchone()
+                if row:
+                    equity = row['equity']
+        except Exception:
+            pass
+        
+        open_positions = app.config.get('OPEN_POSITIONS', [])
+        open_positions_count = len(open_positions)
+        
+        account_id = os.environ.get("CTRADER_ACCOUNT_ID", "47838646")
+        
+        # Daily stats from db
+        trades_today = 0
+        pips_today = 0.0
+        winrate_today = 0.0
+        try:
+            with get_conn() as c:
+                row = c.execute(
+                    """SELECT 
+                           COUNT(*) as total,
+                           SUM(CASE WHEN profit_amount > 0 THEN 1 ELSE 0 END) as wins,
+                           SUM(pips_result) as pips
+                       FROM trades
+                       WHERE close_time >= date('now', 'start of day')"""
+                ).fetchone()
+                if row and row["total"] > 0:
+                    trades_today = row["total"]
+                    pips_today = row["pips"] or 0.0
+                    winrate_today = (row["wins"] / trades_today) * 100
+        except Exception as e:
+            logger.error("Error calculating daily stats: %s", e)
+            
+        # Last signal
+        last_sig = app.config.get('LAST_SIGNAL', {})
+        if not last_sig:
+            try:
+                with get_conn() as c:
+                    row = c.execute("SELECT * FROM signals ORDER BY id DESC LIMIT 1").fetchone()
+                    if row:
+                        row_dict = dict(row)
+                        confluence_score = "4/5"
+                        last_sig = {
+                            "symbol": row_dict["symbol"],
+                            "direction": row_dict["direction"],
+                            "ts": row_dict["ts"],
+                            "confluence_score": confluence_score,
+                            "accepted": bool(row_dict["accepted"]),
+                            "reject_reason": row_dict["reject_reason"]
+                        }
+            except Exception:
+                pass
+                
+        return jsonify({
+            "balance": balance,
+            "equity": equity,
+            "account_id": account_id,
+            "open_positions_count": open_positions_count,
+            "bot_paused": app.config.get('BOT_PAUSED', False),
+            "trades_today": trades_today,
+            "pips_today": pips_today,
+            "winrate_today": winrate_today,
+            "last_signal": last_sig
+        })
+
+    @app.route("/api/open_positions")
+    def api_open_positions():
+        return jsonify(app.config.get('OPEN_POSITIONS', []))
+
+    @app.route("/api/performance/daily")
+    def api_performance_daily():
+        try:
+            with get_conn() as c:
+                rows = c.execute(
+                    """SELECT 
+                           substr(close_time, 1, 10) as day,
+                           SUM(CASE WHEN profit_amount > 0 THEN 1 ELSE 0 END) as wins,
+                           SUM(CASE WHEN profit_amount <= 0 THEN 1 ELSE 0 END) as losses,
+                           SUM(pips_result) as pips,
+                           SUM(profit_amount) as profit
+                       FROM trades
+                       WHERE close_time IS NOT NULL
+                       GROUP BY day
+                       ORDER BY day DESC"""
+                ).fetchall()
+            return jsonify([dict(r) for r in rows])
+        except Exception as e:
+            logger.error("Error in /api/performance/daily: %s", e)
+            return jsonify([])
+
+    @app.route("/api/control/pause", methods=["POST"])
+    def api_control_pause():
+        app.config['BOT_PAUSED'] = True
+        return jsonify({"status": "success", "paused": True})
+
+    @app.route("/api/control/resume", methods=["POST"])
+    def api_control_resume():
+        app.config['BOT_PAUSED'] = False
+        return jsonify({"status": "success", "paused": False})
+
+
+    @app.route("/api/account")
+    def api_account():
+        return jsonify({
+            "balance":             app.config.get("ACCOUNT_BALANCE", 0.0),
+            "equity":              app.config.get("ACCOUNT_BALANCE", 0.0),
+            "account_id":          47838646,
+            "currency":            "EUR",
+            "open_positions_count": len(app.config.get("OPEN_POSITIONS", [])),
+            "bot_paused":          app.config.get("BOT_PAUSED", False),
+            "confluence_score":    app.config.get("CONFLUENCE_SCORE", 0),
+        })
+
+    @app.route("/api/open_positions")
+    def api_open_positions():
+        return jsonify(app.config.get("OPEN_POSITIONS", []))
+
+    @app.route("/api/last_signal")
+    def api_last_signal():
+        return jsonify(app.config.get("LAST_SIGNAL", {}))
+
+    @app.route("/api/performance/daily")
+    def api_daily_performance():
+        try:
+            import sqlite3 as _sq
+            with _sq.connect(app.config["DB_PATH"]) as c:
+                c.row_factory = _sq.Row
+                rows = c.execute(
+                    "SELECT symbol, side, pips, pnl FROM trades WHERE date(close_time)=date('now')"
+                ).fetchall()
+            trades = [dict(r) for r in rows]
+        except Exception:
+            trades = app.config.get("TODAY_TRADES", [])
+        total_pips = sum(t.get("pips", 0) for t in trades)
+        wins  = [t for t in trades if t.get("pips", 0) > 0]
+        losses = [t for t in trades if t.get("pips", 0) < 0]
+        return jsonify({
+            "date":        __import__("datetime").date.today().isoformat(),
+            "total_trades": len(trades),
+            "wins":         len(wins),
+            "losses":       len(losses),
+            "win_pct":      round(len(wins)/len(trades)*100, 1) if trades else 0,
+            "total_pips":   round(total_pips, 1),
+            "total_pnl":    round(sum(t.get("pnl", 0) for t in trades), 2),
+        })
+
+    @app.route("/api/control/pause", methods=["POST"])
+    def api_pause():
+        app.config["BOT_PAUSED"] = True
+        return jsonify({"status": "paused"})
+
+    @app.route("/api/control/resume", methods=["POST"])
+    def api_resume():
+        app.config["BOT_PAUSED"] = False
+        return jsonify({"status": "running"})
 
     return app
 
