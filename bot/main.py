@@ -514,10 +514,11 @@ ALL_SYMBOLS = [
 
 async def run_symbol(symbol: str):
     """Run the bot for a single symbol with its own config and client."""
-    cfg = BotConfig()
+    from config import load_config
+    cfg = load_config()           # load all creds from env
     cfg.symbol = symbol
     cfg.active_symbol = symbol
-    # XAUUSD needs wider SL/TP and higher min_vol
+    # Symbol-specific tuning
     if "XAU" in symbol:
         cfg.atr_sl_mult     = 2.0
         cfg.atr_tp_mult     = 3.0
@@ -525,6 +526,8 @@ async def run_symbol(symbol: str):
         cfg.bb_period       = 20
     elif "JPY" in symbol:
         cfg.max_spread_pips = 4.0
+    else:
+        cfg.max_spread_pips = 3.0
     bot = BollingerBreakoutBotV2(cfg)
     try:
         await bot.run()
