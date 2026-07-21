@@ -1,3 +1,4 @@
+import os
 """
 web/monitor.py
 ==============
@@ -58,7 +59,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     --green: #10b981; --red: #ef4444; --yellow: #f59e0b;
     --text: #e2e8f0; --muted: #64748b; --card: #151f2e;
   }
-  body { font-family: 'Cairo', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  @keyframes shimmer{0%{opacity:1}50%{opacity:.3}100%{opacity:1}}
+  .shimmer{animation:shimmer .9s ease-in-out infinite !important}
+    body { font-family: 'Cairo', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
 
   /* Header */
   .header {
@@ -558,8 +561,19 @@ async function refresh() {
   await Promise.all([loadAccount(), loadStats(), loadEquity(), loadTrades(), loadOpenPositions()]);
 }
 
+// ── Instant load on page open ──
+document.addEventListener('DOMContentLoaded', async () => {
+  // Show skeleton shimmer while loading
+  document.querySelectorAll('.val, .stat-val').forEach(el => {
+    el.dataset.orig = el.textContent;
+    el.classList.add('shimmer');
+  });
+  await refresh();
+  document.querySelectorAll('.shimmer').forEach(el => el.classList.remove('shimmer'));
+});
+// Also fire immediately (before DOMContentLoaded in case already fired)
 refresh();
-setInterval(refresh, 30000);
+setInterval(refresh, 15000);
 </script>
 
 <!-- TradingView Charts Section -->
@@ -687,6 +701,43 @@ def create_app(db_path: str = "bbpro.db"):
     app.config['ACCOUNT_BALANCE'] = 0.0
     app.config['OPEN_POSITIONS'] = []
     app.config['LAST_SIGNAL'] = {}
+
+    # ── Instant preload: fetch real balance in background thread ──
+    def _preload_balance():
+        import time, requests
+        time.sleep(1)  # let Flask start first
+        for token_env in ['CTRADER_ACCESS_TOKEN_4','CTRADER_API_TOKEN','CTRADER_ACCESS_TOKEN']:
+            token = os.environ.get(token_env,'').strip()
+            if not token:
+                continue
+            try:
+                r = requests.get(
+                    'https://api.spotware.com/connect/tradingaccounts',
+                    params={'access_token': token},
+                    headers={'User-Agent':'BBPro/2.0'},
+                    timeout=8
+                )
+                if r.status_code == 200:
+                    data = r.json().get('data',[])
+                    acc_id = os.environ.get('CTRADER_ACCOUNT_ID','47838646')
+                    for a in data:
+                        if str(a.get('accountId')) == str(acc_id):
+                            bal = a['balance'] / 100
+                            app.config['ACCOUNT_BALANCE'] = bal
+                            app.config['ACCOUNT_EQUITY']  = bal
+                            app.config['ACCOUNT_ID']      = acc_id
+                            logger.info("⚡ Preloaded balance: %.2f EUR", bal)
+                            return
+                    # fallback: use first account
+                    if data:
+                        bal = data[0]['balance'] / 100
+                        app.config['ACCOUNT_BALANCE'] = bal
+                        logger.info("⚡ Preloaded balance (fallback): %.2f EUR", bal)
+            except Exception as e:
+                logger.warning("Preload balance failed: %s", e)
+
+    import threading
+    threading.Thread(target=_preload_balance, daemon=True).start()
 
     def get_conn():
         conn = sqlite3.connect(app.config["DB_PATH"])
