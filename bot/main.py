@@ -69,7 +69,8 @@ class BollingerBreakoutBotV2:
     def __init__(self, cfg: Optional[BotConfig] = None):
         self.cfg = cfg or DEFAULT_CONFIG
         self.client = CTraderClient(self.cfg)
-        self.daily_state = DailyState()
+        self.daily_state    = DailyState()
+        self._daily_trades_list: list = []
         self.news_times = parse_news_times(self.cfg.manual_news_times)
         self.symbol_info: Optional[SymbolInfo] = None
         self.bars: List[Bar] = []
@@ -179,6 +180,9 @@ class BollingerBreakoutBotV2:
         # Telegram start notification
         self.notifier.notify_start(self.cfg.symbol, self.cfg.timeframe,
                                    self.cfg.risk_per_trade)
+        # Send professional startup message
+        equity = getattr(self, '_last_equity', 0) or 10000.0
+        self.notifier.send_startup_message(balance=equity, account_id=self.cfg.account_id)
 
         # Install signal handlers
         self._install_signal_handlers()
@@ -217,6 +221,10 @@ class BollingerBreakoutBotV2:
         equity = await self.client.get_account_equity()
         if check_daily_reset(self.daily_state, equity, now_utc):
             logger.info("New day reset | Start equity: %.2f", equity)
+            # Send daily results summary via Telegram
+            if self.cfg.telegram_enabled and hasattr(self, '_daily_trades_list'):
+                self.notifier.send_daily_results(self._daily_trades_list, self.cfg.symbol)
+                self._daily_trades_list = []
 
         # Update web dashboard with real balance (only for XAUUSD instance)
         if self.cfg.symbol == "XAUUSD" and equity > 0:
@@ -440,6 +448,11 @@ class BollingerBreakoutBotV2:
                     rsi=rsi_now, label=self.cfg.bot_label,
                 )
             self.daily_state.daily_trade_count += 1
+            # Track for daily summary
+            self._daily_trades_list.append({
+                "symbol": self.cfg.symbol, "side": side,
+                "price": close_now, "sl_pips": sl_tp.sl_pips, "tp_pips": sl_tp.tp_pips
+            })
             # Professional signal message
             self.notifier.send_trade_signal(
                 symbol=self.cfg.symbol, side=side,
