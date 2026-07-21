@@ -363,7 +363,7 @@ class BollingerBreakoutBotV2:
             # NEW: Volatility ratio
             if self.cfg.min_volatility_ratio > 0:
                 # Compute simple stddev
-                std = float(np.std(closes[-self.cfg.stddev_period:]))
+                std = float(np.std(closes[-self.cfg.std_dev_period:]))
                 if std > 0:
                     ratio = atr_now / std
                     if ratio < self.cfg.min_volatility_ratio:

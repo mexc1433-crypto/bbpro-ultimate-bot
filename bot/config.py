@@ -65,6 +65,8 @@ class BotConfig:
     sl_pad_pips:          float = 1.0
     min_volatility_ratio: float = 1.2
     std_dev_period:       int   = 14
+    bot_label:            str   = "BBProV2"
+    show_debug:           bool  = False
 
     # Sizing
     risk_per_trade:    float = 0.5

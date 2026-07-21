@@ -561,6 +561,102 @@ async function refresh() {
 refresh();
 setInterval(refresh, 30000);
 </script>
+
+<!-- TradingView Charts Section -->
+<div style="margin:24px 0">
+  <h2 style="color:var(--text);font-size:1.1em;margin-bottom:14px;font-weight:700;letter-spacing:.05em">
+    📊 TradingView — Live Charts
+  </h2>
+  <!-- Symbol tabs -->
+  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap" id="tvTabs">
+    <button onclick="loadTVChart('EURUSD')"   class="tv-tab active" data-sym="EURUSD">EURUSD</button>
+    <button onclick="loadTVChart('GBPUSD')"   class="tv-tab"        data-sym="GBPUSD">GBPUSD</button>
+    <button onclick="loadTVChart('XAUUSD')"   class="tv-tab"        data-sym="XAUUSD">XAU/USD</button>
+    <button onclick="loadTVChart('USDJPY')"   class="tv-tab"        data-sym="USDJPY">USDJPY</button>
+    <button onclick="loadTVChart('EURJPY')"   class="tv-tab"        data-sym="EURJPY">EURJPY</button>
+    <button onclick="loadTVChart('USDCAD')"   class="tv-tab"        data-sym="USDCAD">USDCAD</button>
+  </div>
+  <!-- Chart container -->
+  <div id="tvChartContainer" style="border-radius:12px;overflow:hidden;background:#131722;height:450px">
+    <div id="tradingview_widget"></div>
+  </div>
+</div>
+
+<style>
+.tv-tab {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 7px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: .85em;
+  font-weight: 600;
+  transition: all .2s;
+}
+.tv-tab.active, .tv-tab:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+</style>
+
+<script>
+// TradingView Advanced Chart Widget
+let _tvWidget = null;
+let _currentSym = 'EURUSD';
+
+function loadTVChart(symbol) {
+  _currentSym = symbol;
+  // Update tab styles
+  document.querySelectorAll('.tv-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.sym === symbol);
+  });
+
+  // Map symbol to TradingView format
+  const tvSym = symbol === 'XAUUSD' ? 'OANDA:XAUUSD' : 'FX:' + symbol;
+
+  // Clear container
+  const container = document.getElementById('tradingview_widget');
+  container.innerHTML = '';
+
+  // Create new widget
+  new TradingView.widget({
+    container_id: 'tradingview_widget',
+    width: '100%',
+    height: 450,
+    symbol: tvSym,
+    interval: '30',
+    timezone: 'Africa/Cairo',
+    theme: 'dark',
+    style: '1',
+    locale: 'en',
+    toolbar_bg: '#131722',
+    enable_publishing: false,
+    withdateranges: true,
+    allow_symbol_change: false,
+    save_image: false,
+    studies: [
+      'BB@tv-basicstudies',
+      'RSI@tv-basicstudies',
+      'MAExp@tv-basicstudies'
+    ],
+    show_popup_button: true,
+    popup_width: '1000',
+    popup_height: '650',
+    hide_side_toolbar: false,
+  });
+}
+
+// Load TradingView script then init chart
+(function() {
+  const s = document.createElement('script');
+  s.src = 'https://s3.tradingview.com/tv.js';
+  s.onload = () => loadTVChart('EURUSD');
+  document.head.appendChild(s);
+})();
+</script>
+
 </body>
 </html>"""
 
