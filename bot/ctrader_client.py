@@ -165,7 +165,8 @@ class CTraderClient:
         req = ProtoOAApplicationAuthReq()
         req.clientId     = self.cfg.client_id
         req.clientSecret = self.cfg.client_secret
-        self._tc.send(req)
+        d = self._tc.send(req)
+        d.addErrback(lambda _: None)  # suppress timeout noise
 
     def _on_disconnected(self, _, reason):
         self._connected      = False
@@ -182,7 +183,8 @@ class CTraderClient:
                 req = ProtoOAAccountAuthReq()
                 req.ctidTraderAccountId = int(self.cfg.account_id)
                 req.accessToken         = self.cfg.access_token
-                self._tc.send(req)
+                d = self._tc.send(req)
+                d.addErrback(lambda _: None)
 
             elif pt == ProtoOAAccountAuthRes().payloadType:
                 self._authed_account = True
@@ -192,7 +194,8 @@ class CTraderClient:
                     r = ProtoOASubscribeSpotsReq()
                     r.ctidTraderAccountId = int(self.cfg.account_id)
                     r.symbolId.append(self.SYMBOL_IDS.get(sym, 1))
-                    self._tc.send(r)
+                    d2 = self._tc.send(r)
+                    d2.addErrback(lambda _: None)
 
             elif pt == ProtoOASpotEvent().payloadType:
                 spot = Protobuf.extract(message)
@@ -331,11 +334,14 @@ class CTraderClient:
             req.takeProfit  = (ask + tp_pips * pip) if side=="buy" else (bid - tp_pips * pip)
             req.hasTakeProfit = True
 
-        _reactor.callFromThread(self._tc.send, req)
+        def _do_send():
+            d = self._tc.send(req)
+            d.addErrback(lambda _: None)
+        _reactor.callFromThread(_do_send)
         logger.info("✅ Market order sent: %s %s %.0f units | SL%.1fp TP%.1fp",
                     side, symbol_name, volume_units,
                     sl_pips or 0, tp_pips or 0)
-        return 1  # position ID placeholder
+        return 1
 
     async def modify_position(self, position_id: int, *, sl_price=None, tp_price=None) -> bool:
         if not self._authed_account:
@@ -345,7 +351,10 @@ class CTraderClient:
         req.positionId = position_id
         if sl_price: req.stopLoss    = sl_price
         if tp_price: req.takeProfit  = tp_price
-        _reactor.callFromThread(self._tc.send, req)
+        def _do_mod():
+            d = self._tc.send(req)
+            d.addErrback(lambda _: None)
+        _reactor.callFromThread(_do_mod)
         return True
 
     async def close_position(self, position_id: int) -> bool:
@@ -354,7 +363,10 @@ class CTraderClient:
         req = ProtoOAClosePositionReq()
         req.ctidTraderAccountId = int(self.cfg.account_id)
         req.positionId = position_id
-        _reactor.callFromThread(self._tc.send, req)
+        def _do_mod():
+            d = self._tc.send(req)
+            d.addErrback(lambda _: None)
+        _reactor.callFromThread(_do_mod)
         return True
 
     async def close_all_positions(self, label: str = "") -> int:
