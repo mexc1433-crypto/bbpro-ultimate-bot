@@ -665,7 +665,7 @@ def create_app(db_path: str = "bbpro.db"):
                     """SELECT 
                            COUNT(*) as total,
                            SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-                           SUM(pips_result) as pips
+                           SUM(pips) as pips
                        FROM trades
                        WHERE close_time >= date('now', 'start of day')"""
                 ).fetchone()
@@ -721,7 +721,7 @@ def create_app(db_path: str = "bbpro.db"):
                            substr(close_time, 1, 10) as day,
                            SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
                            SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses,
-                           SUM(pips_result) as pips,
+                           SUM(pips) as pips,
                            SUM(pnl) as profit
                        FROM trades
                        WHERE close_time IS NOT NULL

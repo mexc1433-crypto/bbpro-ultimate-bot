@@ -503,10 +503,46 @@ class BollingerBreakoutBotV2:
 # ===========================================================================
 #  ENTRY POINT
 # ===========================================================================
-def main():
-    bot = BollingerBreakoutBotV2()
+ALL_SYMBOLS = [
+    "XAUUSD",   # Gold — primary
+    "EURUSD",
+    "GBPUSD",
+    "USDJPY",
+    "EURJPY",
+    "USDCAD",
+]
+
+async def run_symbol(symbol: str):
+    """Run the bot for a single symbol with its own config and client."""
+    cfg = BotConfig()
+    cfg.symbol = symbol
+    cfg.active_symbol = symbol
+    # XAUUSD needs wider SL/TP and higher min_vol
+    if "XAU" in symbol:
+        cfg.atr_sl_mult     = 2.0
+        cfg.atr_tp_mult     = 3.0
+        cfg.max_spread_pips = 5.0
+        cfg.bb_period       = 20
+    elif "JPY" in symbol:
+        cfg.max_spread_pips = 4.0
+    bot = BollingerBreakoutBotV2(cfg)
     try:
-        asyncio.run(bot.run())
+        await bot.run()
+    except Exception as e:
+        logger.error("[%s] Bot error: %s", symbol, e)
+
+
+async def run_all_symbols():
+    """Run all symbols concurrently."""
+    logger.info("🚀 Starting BBPro ULTIMATE — %d symbols: %s",
+                len(ALL_SYMBOLS), ", ".join(ALL_SYMBOLS))
+    tasks = [asyncio.create_task(run_symbol(sym)) for sym in ALL_SYMBOLS]
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def main():
+    try:
+        asyncio.run(run_all_symbols())
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
     except Exception as e:

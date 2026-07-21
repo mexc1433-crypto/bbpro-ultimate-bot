@@ -25,11 +25,11 @@ class BotConfig:
     account_id:    int = 47838646
     host:          str = "demo.ctraderapi.com"
     port:          int = 5035
-    symbol:        str = "EURUSD"
+    symbol:        str = "XAUUSD"
     timeframe:     str = "m30"
 
     # Multiple symbols support
-    active_symbol:     str = 'EURUSD'
+    active_symbol:     str = 'XAUUSD'
 
     # Bollinger Bands
     bb_period:             int   = 20
@@ -147,7 +147,7 @@ class BotConfig:
 
     # Multi-symbol support
     symbols: List[str] = field(default_factory=lambda: ['EURUSD', 'XAUUSD', 'GBPUSD', 'USDJPY', 'EURJPY', 'USDCAD'])
-    multi_symbol_mode: bool = False
+    multi_symbol_mode: bool = True
 
     # Stochastic
     stoch_k_period: int = 5
