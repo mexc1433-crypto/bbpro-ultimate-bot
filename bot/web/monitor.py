@@ -223,6 +223,35 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Manual Trade Panel -->
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:16px;direction:rtl">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
+      <span style="font-size:1.1em">📌</span>
+      <span style="font-weight:700;font-size:1em">صفقة يدوية</span>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <select id="tradeSymbol" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-family:'Cairo',sans-serif;font-size:.9em">
+        <option>EURUSD</option><option>GBPUSD</option><option>XAUUSD</option>
+        <option>USDJPY</option><option>EURJPY</option><option>USDCAD</option>
+      </select>
+      <input id="tradeVolume" type="number" value="1000" min="100" step="100"
+        style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 12px;width:110px;font-family:'Cairo',sans-serif;font-size:.9em" />
+      <button onclick="openTrade('BUY')"
+        style="flex:1;min-width:90px;padding:10px;border-radius:8px;font-family:'Cairo',sans-serif;font-weight:700;font-size:.95em;background:var(--green);color:white;border:none;cursor:pointer">
+        🟢 BUY
+      </button>
+      <button onclick="openTrade('SELL')"
+        style="flex:1;min-width:90px;padding:10px;border-radius:8px;font-family:'Cairo',sans-serif;font-weight:700;font-size:.95em;background:var(--red);color:white;border:none;cursor:pointer">
+        🔴 SELL
+      </button>
+      <button onclick="closeAllTrades()"
+        style="flex:1;min-width:90px;padding:10px;border-radius:8px;font-family:'Cairo',sans-serif;font-weight:700;font-size:.85em;background:var(--surface2);color:var(--muted);border:1px solid var(--border);cursor:pointer">
+        ❌ إغلاق الكل
+      </button>
+    </div>
+    <div id="tradeMsg" style="margin-top:10px;font-size:.85em;min-height:20px"></div>
+  </div>
+
   <!-- Stats -->
   <div class="stats-grid" id="statsGrid">
     <div class="stat-card blue"><div class="stat-label">إجمالي الصفقات</div><div class="stat-value neu" id="s_total">—</div></div>
@@ -360,6 +389,45 @@ function fmtTime(s) {
 async function fetchJSON(url) {
   try { const r = await fetch(url); return r.ok ? r.json() : null; }
   catch { return null; }
+}
+
+async function openTrade(side) {
+  const symbol = document.getElementById('tradeSymbol').value;
+  const volume = parseInt(document.getElementById('tradeVolume').value) || 1000;
+  const msg    = document.getElementById('tradeMsg');
+  msg.style.color = 'var(--muted)';
+  msg.textContent = '⏳ جاري تنفيذ الصفقة...';
+  try {
+    const r = await fetch('/api/trade/open', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({symbol, side, volume})
+    });
+    const d = await r.json();
+    if (r.ok) {
+      const emoji = side==='BUY' ? '🟢' : '🔴';
+      msg.style.color = side==='BUY' ? 'var(--green)' : 'var(--red)';
+      msg.textContent = `${emoji} ${side} ${symbol} | حجم: ${volume} | سعر: ${d.trade?.open_price ?? '--'}`;
+      await loadOpenPositions();
+      await loadAccount();
+    } else {
+      msg.style.color = 'var(--red)';
+      msg.textContent = '❌ ' + (d.error || 'خطأ في التنفيذ');
+    }
+  } catch(e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = '❌ تعذر الاتصال بالخادم';
+  }
+}
+
+async function closeAllTrades() {
+  const msg = document.getElementById('tradeMsg');
+  const r = await fetch('/api/trade/close_all', {method:'POST'});
+  const d = await r.json();
+  msg.style.color = 'var(--muted)';
+  msg.textContent = `✅ تم إغلاق ${d.count ?? 0} صفقة`;
+  await loadOpenPositions();
+  await loadAccount();
 }
 
 async function controlBot(action) {
@@ -896,6 +964,77 @@ def create_app(db_path: str = "bbpro.db"):
         except Exception as e:
             logger.error("Error in /api/performance/daily: %s", e)
             return jsonify([])
+
+    # ── Manual Trade Endpoints (BUY / SELL) ──
+    @app.route("/api/trade/open", methods=["POST"])
+    def api_trade_open():
+        """
+        Open a manual BUY or SELL paper trade.
+        Body: { "symbol": "EURUSD", "side": "BUY", "volume": 1000 }
+        """
+        from flask import request
+        data = request.get_json(silent=True) or {}
+        symbol = data.get("symbol", "EURUSD").upper()
+        side   = data.get("side", "BUY").upper()
+        volume = int(data.get("volume", 1000))
+
+        if side not in ("BUY","SELL"):
+            return jsonify({"error": "side must be BUY or SELL"}), 400
+
+        import time, random
+        # Get current price via simple lookup
+        prices = app.config.get("LAST_PRICES", {})
+        price  = prices.get(symbol, round(random.uniform(1.08, 1.12), 5))
+
+        trade = {
+            "id"       : int(time.time()),
+            "symbol"   : symbol,
+            "side"     : side,
+            "volume"   : volume,
+            "open_price": price,
+            "pnl"      : 0.0,
+            "ts"       : time.strftime("%Y-%m-%d %H:%M:%S"),
+            "source"   : "manual",
+        }
+
+        # Store in open positions
+        positions = app.config.get("OPEN_POSITIONS", [])
+        positions.append(trade)
+        app.config["OPEN_POSITIONS"] = positions
+
+        # Log to DB
+        try:
+            with get_conn() as c:
+                c.execute(
+                    "INSERT INTO signals (symbol, direction, ts, accepted, reject_reason) VALUES (?,?,?,?,?)",
+                    (symbol, side, trade["ts"], 1, "manual")
+                )
+        except Exception:
+            pass
+
+        logger.info("📌 Manual %s %s | Vol: %d | Price: %.5f", side, symbol, volume, price)
+        return jsonify({"status": "opened", "trade": trade})
+
+    @app.route("/api/trade/close", methods=["POST"])
+    def api_trade_close():
+        """Close a manual trade by id. Body: { "id": 12345 }"""
+        from flask import request
+        data = request.get_json(silent=True) or {}
+        trade_id = data.get("id")
+        positions = app.config.get("OPEN_POSITIONS", [])
+        closed = [p for p in positions if p.get("id") == trade_id]
+        remaining = [p for p in positions if p.get("id") != trade_id]
+        app.config["OPEN_POSITIONS"] = remaining
+        if closed:
+            return jsonify({"status": "closed", "trade": closed[0]})
+        return jsonify({"error": "trade not found"}), 404
+
+    @app.route("/api/trade/close_all", methods=["POST"])
+    def api_trade_close_all():
+        """Close all open positions."""
+        count = len(app.config.get("OPEN_POSITIONS", []))
+        app.config["OPEN_POSITIONS"] = []
+        return jsonify({"status": "closed_all", "count": count})
 
     @app.route("/api/control/pause", methods=["POST"])
     def api_control_pause():
