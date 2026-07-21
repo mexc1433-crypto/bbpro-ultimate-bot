@@ -745,48 +745,6 @@ def create_app(db_path: str = "bbpro.db"):
 
 
     
-    @app.route("/api/open_positions")
-    def api_open_positions():
-        return jsonify(app.config.get("OPEN_POSITIONS", []))
-
-    @app.route("/api/last_signal")
-    def api_last_signal():
-        return jsonify(app.config.get("LAST_SIGNAL", {}))
-
-    @app.route("/api/performance/daily")
-    def api_daily_performance():
-        try:
-            import sqlite3 as _sq
-            with _sq.connect(app.config["DB_PATH"]) as c:
-                c.row_factory = _sq.Row
-                rows = c.execute(
-                    "SELECT symbol, side, pips, pnl FROM trades WHERE date(close_time)=date('now')"
-                ).fetchall()
-            trades = [dict(r) for r in rows]
-        except Exception:
-            trades = app.config.get("TODAY_TRADES", [])
-        total_pips = sum(t.get("pips", 0) for t in trades)
-        wins  = [t for t in trades if t.get("pips", 0) > 0]
-        losses = [t for t in trades if t.get("pips", 0) < 0]
-        return jsonify({
-            "date":        __import__("datetime").date.today().isoformat(),
-            "total_trades": len(trades),
-            "wins":         len(wins),
-            "losses":       len(losses),
-            "win_pct":      round(len(wins)/len(trades)*100, 1) if trades else 0,
-            "total_pips":   round(total_pips, 1),
-            "total_pnl":    round(sum(t.get("pnl", 0) for t in trades), 2),
-        })
-
-    @app.route("/api/control/pause", methods=["POST"])
-    def api_pause():
-        app.config["BOT_PAUSED"] = True
-        return jsonify({"status": "paused"})
-
-    @app.route("/api/control/resume", methods=["POST"])
-    def api_resume():
-        app.config["BOT_PAUSED"] = False
-        return jsonify({"status": "running"})
 
     return app
 
