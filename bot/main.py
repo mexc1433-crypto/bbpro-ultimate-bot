@@ -512,12 +512,15 @@ ALL_SYMBOLS = [
     "USDCAD",
 ]
 
-async def run_symbol(symbol: str):
+async def run_symbol(symbol: str, web_enabled: bool = False):
     """Run the bot for a single symbol with its own config and client."""
     from config import load_config
     cfg = load_config()           # load all creds from env
     cfg.symbol = symbol
     cfg.active_symbol = symbol
+    # Only the FIRST symbol (XAUUSD) runs the web monitor
+    if not web_enabled:
+        cfg.web_monitor_enabled = False
     # Symbol-specific tuning
     if "XAU" in symbol:
         cfg.atr_sl_mult     = 2.0
@@ -539,7 +542,10 @@ async def run_all_symbols():
     """Run all symbols concurrently."""
     logger.info("🚀 Starting BBPro ULTIMATE — %d symbols: %s",
                 len(ALL_SYMBOLS), ", ".join(ALL_SYMBOLS))
-    tasks = [asyncio.create_task(run_symbol(sym)) for sym in ALL_SYMBOLS]
+    tasks = [
+        asyncio.create_task(run_symbol(sym, web_enabled=(i == 0)))
+        for i, sym in enumerate(ALL_SYMBOLS)
+    ]
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
