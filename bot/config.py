@@ -22,6 +22,7 @@ class BotConfig:
     client_id:     str = ""
     client_secret: str = ""
     access_token:  str = ""
+    api_token:     str = ""   # fallback token for REST
     account_id:    int = 47838646
     host:          str = "demo.ctraderapi.com"
     port:          int = 5035
@@ -209,7 +210,8 @@ def load_config() -> BotConfig:
     cfg = BotConfig()
     cfg.client_id = os.environ.get('CTRADER_CLIENT_ID_3', os.environ.get('CTRADER_CLIENT_ID', '')).strip()
     cfg.client_secret = os.environ.get('CTRADER_SECRET_4', os.environ.get('CTRADER_SECRET', '')).strip()
-    cfg.access_token = os.environ.get('CTRADER_API_TOKEN', os.environ.get('CTRADER_ACCESS_TOKEN', os.environ.get('CTRADER_ACCESS_TOKEN_2', ''))).strip()
+    cfg.access_token  = os.environ.get('CTRADER_ACCESS_TOKEN_4', os.environ.get('CTRADER_API_TOKEN', '')).strip()
+    cfg.api_token     = os.environ.get('CTRADER_API_TOKEN', os.environ.get('CTRADER_ACCESS_TOKEN_4', '')).strip()
     _account_id = os.environ.get('CTRADER_ACCOUNT_ID', '').strip()
     if _account_id:
         try:
