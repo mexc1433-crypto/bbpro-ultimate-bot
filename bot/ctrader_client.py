@@ -127,7 +127,7 @@ class CTraderClient:
         self._symbol_id_cache: Dict[str, int] = {
             "EURUSD": 1, "GBPUSD": 2, "USDJPY": 3, "USDCHF": 4,
             "AUDUSD": 5, "USDCAD": 6, "NZDUSD": 7, "EURGBP": 8,
-            "EURJPY": 9, "GBPJPY": 10,
+            "EURJPY": 9, "GBPJPY": 10, "XAUUSD": 41, "XAGUSD": 42,
         }
         self._cached_equity: float = 0.0
 
@@ -288,44 +288,65 @@ class CTraderClient:
         req.toTimestamp = to_ms
         req.count = count
         self._client.send(req)
-        # Fallback: fetch via Spotware REST API  
-        import asyncio, aiohttp, time as _time
+        # Fallback: fetch via Yahoo Finance (no auth needed, reliable OHLCV)
+        import aiohttp, time as _time
+        yahoo_map = {
+            "EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X",
+            "USDJPY": "USDJPY=X", "USDCAD": "USDCAD=X",
+            "EURJPY": "EURJPY=X", "GBPJPY": "GBPJPY=X",
+            "AUDUSD": "AUDUSD=X", "NZDUSD": "NZDUSD=X",
+            "XAUUSD": "GC=F",     "XAGUSD": "SI=F",
+            "US30":   "YM=F",     "NAS100": "NQ=F",
+        }
+        yticker = yahoo_map.get(symbol_name)
+        if not yticker:
+            logger.warning("[Yahoo] No ticker mapping for %s", symbol_name)
+            return []
+        yf_interval = {
+            "m1":"1m","m5":"5m","m15":"15m","m30":"30m",
+            "h1":"1h","h4":"1h","d1":"1d"
+        }.get(timeframe, "30m")
+        now_ts = int(_time.time())
+        period1 = now_ts - max(count, 300) * mins * 60
+        yf_url = (
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{yticker}"
+            f"?period1={period1}&period2={now_ts}&interval={yf_interval}"
+            f"&includePrePost=false"
+        )
         try:
-            tf_rest = {
-                "m1":"M1","m5":"M5","m15":"M15","m30":"M30",
-                "h1":"H1","h4":"H4","d1":"D1"
-            }.get(timeframe, "M30")
-            to_ts = int(_time.time() * 1000)
-            from_ts = to_ts - count * mins * 60 * 1000
-            rest_url = (
-                f"https://api.spotware.com/connect/tradingaccounts/"
-                f"{self.cfg.account_id}/symbols/{sym_id}/trendbars/{tf_rest}"
-                f"?count={count}&from={from_ts}&to={to_ts}"
-                f"&access_token={self.cfg.access_token}"
-            )
             async with aiohttp.ClientSession() as sess:
-                async with sess.get(rest_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                async with sess.get(
+                    yf_url,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as resp:
                     if resp.status == 200:
                         raw = await resp.json(content_type=None)
-                        bars_raw = raw.get("data", raw) if isinstance(raw, dict) else raw
-                        result = []
-                        for b in (bars_raw or []):
+                        result_data = raw["chart"]["result"][0]
+                        timestamps = result_data.get("timestamp", [])
+                        q = result_data["indicators"]["quote"][0]
+                        opens  = q.get("open",  [])
+                        highs  = q.get("high",  [])
+                        lows   = q.get("low",   [])
+                        closes = q.get("close", [])
+                        volumes= q.get("volume",[])
+                        bars_out = []
+                        for i, ts in enumerate(timestamps):
                             try:
-                                pip = 0.0001 if "JPY" not in symbol_name and "XAU" not in symbol_name else 0.01
-                                o = b.get("open",0) / 100000
-                                h = b.get("high", o)
-                                l = b.get("low",  o)
-                                c = b.get("close",o)
-                                v = b.get("volume", 0)
-                                ts= b.get("timestamp", 0) / 1000
-                                result.append(Bar(open=o,high=h,low=l,close=c,volume=v,timestamp=ts))
-                            except Exception:
+                                o = opens[i]  or 0
+                                h = highs[i]  or o
+                                l = lows[i]   or o
+                                c = closes[i] or o
+                                v = volumes[i] or 0
+                                if c and c > 0:
+                                    bars_out.append(Bar(open=o,high=h,low=l,close=c,volume=v,timestamp=float(ts)))
+                            except (IndexError, TypeError):
                                 pass
-                        if result:
-                            logger.info("[REST] Got %d bars for %s/%s", len(result), symbol_name, timeframe)
-                            return result
+                        if bars_out:
+                            logger.info("[Yahoo] %d bars for %s/%s", len(bars_out), symbol_name, timeframe)
+                            return bars_out[-count:]
         except Exception as e:
-            logger.warning("[REST bars] %s", e)
+            logger.warning("[Yahoo bars] %s", e)
         return []
 
     # ------------------------------------------------------------------
