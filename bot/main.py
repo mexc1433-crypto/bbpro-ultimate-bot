@@ -164,6 +164,15 @@ class BollingerBreakoutBotV2:
 
         equity = await self.client.get_account_equity()
         self.daily_state.reset(equity, datetime.now(timezone.utc))
+        # Push real balance to web dashboard
+        try:
+            from web.monitor import _flask_app
+            if _flask_app:
+                _flask_app.config['ACCOUNT_BALANCE'] = equity
+                _flask_app.config['ACCOUNT_EQUITY']  = equity
+                _flask_app.config['ACCOUNT_ID']      = str(self.cfg.account_id)
+        except Exception:
+            pass
 
         # Telegram start notification
         self.notifier.notify_start(self.cfg.symbol, self.cfg.timeframe,
@@ -206,6 +215,17 @@ class BollingerBreakoutBotV2:
         equity = await self.client.get_account_equity()
         if check_daily_reset(self.daily_state, equity, now_utc):
             logger.info("New day reset | Start equity: %.2f", equity)
+
+        # Update web dashboard with real balance (only for XAUUSD instance)
+        if self.cfg.symbol == "XAUUSD" and equity > 0:
+            try:
+                from web.monitor import _flask_app
+                if _flask_app:
+                    _flask_app.config['ACCOUNT_BALANCE'] = equity
+                    _flask_app.config['ACCOUNT_EQUITY']  = equity
+                    _flask_app.config['ACCOUNT_ID']      = str(self.cfg.account_id)
+            except Exception:
+                pass
 
         # Log equity to DB
         if self.db:

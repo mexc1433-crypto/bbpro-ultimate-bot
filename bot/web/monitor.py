@@ -563,6 +563,7 @@ def create_app(db_path: str = "bbpro.db"):
         raise
 
     app = Flask(__name__)
+_flask_app = app  # exported for main.py to update balance
     app.config["DB_PATH"] = db_path
     app.config["BOT_PAUSED"] = False
     app.config["ACCOUNT_BALANCE"] = 0.0
