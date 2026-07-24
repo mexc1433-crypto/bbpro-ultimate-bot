@@ -1,0 +1,8 @@
+[service]
+name = "bbpro-ultimate"
+instance_type = "free"
+regions = ["fra"]
+port = 8000
+
+[service.env]
+PORT = "8000"
