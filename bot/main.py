@@ -621,6 +621,21 @@ class BollingerBreakoutBotV2:
             from web.monitor import _app_instance
             if _app_instance:
                 _app_instance.config["CONFLUENCE_SCORE"] = score
+                # Save indicators for AI commentary endpoint
+                _app_instance.config["LAST_INDICATORS"] = indicators_dict
+                # Save latest price for each symbol
+                sym = indicators_dict.get("symbol", "UNKNOWN")
+                prices = _app_instance.config.get("LAST_PRICES", {})
+                prices[sym] = indicators_dict.get("close", 0.0)
+                _app_instance.config["LAST_PRICES"] = prices
+                # Save last signal info
+                _app_instance.config["LAST_SIGNAL"] = {
+                    "symbol": sym,
+                    "direction": "BUY" if direction.value == 1 else "SELL",
+                    "score": round(score, 1),
+                    "passed": passed,
+                    "ts": str(indicators_dict.get("time", "")),
+                }
         except Exception:
             pass
         return passed, score
