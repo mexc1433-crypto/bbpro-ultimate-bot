@@ -97,12 +97,23 @@ class BollingerBreakoutBotV2:
     #  LIFECYCLE
     # ------------------------------------------------------------------
     async def run(self) -> None:
+        # Start web monitor FIRST (so health check passes even if creds missing)
+        if self.cfg.web_monitor_enabled:
+            try:
+                start_monitor(self.cfg.db_path, self.cfg.web_monitor_port,
+                              self.cfg.web_monitor_host)
+                logger.info("🌐 Web monitor: http://localhost:%d",
+                            self.cfg.web_monitor_port)
+            except Exception as e:
+                logger.warning("Web monitor failed to start: %s", e)
+
         errs = self.cfg.validate()
         if errs:
             for e in errs:
                 logger.error("Config error: %s", e)
-            logger.error("Fix config.py and retry.")
-            return
+            logger.warning("⚠️ Running with missing config — REST/paper mode only. "
+                          "Add missing env vars to enable full functionality.")
+            # Don't return — continue running so web monitor stays up
 
         logger.info("=" * 70)
         logger.info("Bollinger Breakout Pro v2.0 - ULTIMATE Python Edition")
@@ -128,16 +139,6 @@ class BollingerBreakoutBotV2:
                     self.cfg.telegram_enabled, self.cfg.db_enabled,
                     self.cfg.web_monitor_enabled)
         logger.info("=" * 70)
-
-        # Start web monitor
-        if self.cfg.web_monitor_enabled:
-            try:
-                start_monitor(self.cfg.db_path, self.cfg.web_monitor_port,
-                              self.cfg.web_monitor_host)
-                logger.info("🌐 Web monitor: http://localhost:%d",
-                            self.cfg.web_monitor_port)
-            except Exception as e:
-                logger.warning("Web monitor failed to start: %s", e)
 
         # Connect to broker
         await self.client.connect()
