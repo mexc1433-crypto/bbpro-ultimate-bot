@@ -1,0 +1,19 @@
+name: bbpro-ultimate
+build:
+  type: docker
+  dockerfile: ./Dockerfile
+  source:
+    type: github
+    repo: mexc1433-crypto/bbpro-ultimate-bot
+    branch: main
+deploy:
+  port: 8080
+  region: us
+  resources:
+    cpu: 0.25
+    memory: 256MB
+  env:
+    - PORT=8080
+    - PYTHONUNBUFFERED=1
+    - CTRADER_ACCOUNT_ID=47838646
+    - TELEGRAM_CHAT_ID=7005859703
