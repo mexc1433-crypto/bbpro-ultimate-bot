@@ -453,39 +453,14 @@ class BollingerBreakoutBotV2:
                 continue
 
             side = "buy" if direction == TradeDirection.BUY else "sell"
-            pos_id = await self.client.send_market_order(
-                self.cfg.symbol, side=side,
-                volume_units=volume,
-                sl_pips=sl_tp.sl_pips,
-                tp_pips=sl_tp.tp_pips,
-                label=self.cfg.bot_label,
-                comment=f"BBProV2 {self.cfg.symbol} {side}",
-            )
 
-            # Log to DB + Telegram (even if pos_id is None in stub mode)
-            if self.db:
-                trade_id = self.db.log_trade_open(
-                    symbol=self.cfg.symbol, side=side, volume_units=volume,
-                    entry_price=close_now, sl_price=sl_tp.sl_price,
-                    tp_price=sl_tp.tp_price, sl_pips=sl_tp.sl_pips,
-                    tp_pips=sl_tp.tp_pips, atr=atr_now, adx=adx_now,
-                    rsi=rsi_now, label=self.cfg.bot_label,
-                )
-            self.daily_state.daily_trade_count += 1
-            # Track for daily summary
-            self._daily_trades_list.append({
-                "symbol": self.cfg.symbol, "side": side,
-                "price": close_now, "sl_pips": sl_tp.sl_pips, "tp_pips": sl_tp.tp_pips
-            })
-            # Professional signal message
-            self.notifier.send_trade_signal(
-                symbol=self.cfg.symbol, side=side,
-                price=close_now,
-                sl=sl_tp.sl_price, tp=sl_tp.tp_price,
-                volume_lots=volume / 100000.0,
-            )
+            # === Groq AI Gate: analyze BEFORE executing ===
+            ai_confidence = 100  # default: allow if AI disabled
+            ai_verdict = "BUY" if side == "buy" else "SELL"
+            ai_reasoning = ""
+            ai_risk = ""
+            ai_suggestion = ""
 
-            # Groq AI analysis of the signal
             if self.ai.enabled:
                 try:
                     ai_result = self.ai.analyze_signal(
@@ -501,21 +476,134 @@ class BollingerBreakoutBotV2:
                         },
                         atr=atr_now,
                         adx=adx_now,
+                        spread_pips=spread_pips,
                     )
                     if ai_result:
-                        ai_msg = (f"🤖 AI Analysis | {self.cfg.symbol} {side.upper()}\n"
-                                  f"Confidence: {ai_result.confidence}%\n"
-                                  f"Verdict: {ai_result.verdict}\n"
-                                  f"{ai_result.reasoning}\n"
-                                  f"⚠️ {ai_result.risk_note}\n"
-                                  f"💡 {ai_result.suggestion}")
-                        self.notifier.send(ai_msg)
-                        logger.info("🤖 AI: %s (%d%%) — %s",
-                                   ai_result.verdict, ai_result.confidence, ai_result.reasoning[:80])
+                        ai_confidence = ai_result.confidence
+                        ai_verdict = ai_result.verdict
+                        ai_reasoning = ai_result.reasoning
+                        ai_risk = ai_result.risk_note
+                        ai_suggestion = ai_result.suggestion
+
+                        # AI confidence threshold gate (default 60%)
+                        ai_min_confidence = int(os.environ.get("AI_MIN_CONFIDENCE", "60"))
+                        if ai_result.confidence < ai_min_confidence:
+                            logger.info("AI REJECTED: %d%% < %d%% threshold — skipping %s %s",
+                                       ai_result.confidence, ai_min_confidence, side.upper(), self.cfg.symbol)
+                            if self.db:
+                                self.db.log_signal(
+                                    symbol=self.cfg.symbol, side=side,
+                                    direction=direction.value, accepted=False,
+                                    reject_reason=f"AI_confidence_{ai_result.confidence}_<{ai_min_confidence}",
+                                    price=close_now, rsi=rsi_now, ema_fast=ema_f, ema_slow=ema_s,
+                                    atr=atr_now, adx=adx_now,
+                                )
+                            self.notifier.send(
+                                f"AI Rejected | {self.cfg.symbol} {side.upper()}\n"
+                                f"Confidence: {ai_result.confidence}% (< {ai_min_confidence}% threshold)\n"
+                                f"Verdict: {ai_result.verdict}\n"
+                                f"{ai_result.reasoning}"
+                            )
+                            continue  # Skip this trade
+
+                        # AI says WAIT — respect it
+                        if ai_result.verdict == "WAIT":
+                            logger.info("AI says WAIT for %s %s — skipping", side.upper(), self.cfg.symbol)
+                            if self.db:
+                                self.db.log_signal(
+                                    symbol=self.cfg.symbol, side=side,
+                                    direction=direction.value, accepted=False,
+                                    reject_reason="AI_verdict_WAIT",
+                                    price=close_now, rsi=rsi_now, ema_fast=ema_f, ema_slow=ema_s,
+                                    atr=atr_now, adx=adx_now,
+                                )
+                            self.notifier.send(
+                                f"AI says WAIT | {self.cfg.symbol} {side.upper()}\n"
+                                f"Confidence: {ai_result.confidence}%\n"
+                                f"{ai_result.reasoning}"
+                            )
+                            continue
+
+                        # === AI Risk Management: adjust SL/TP based on confidence ===
+                        # High confidence (>=80%): tighter SL for better R:R
+                        # Medium confidence (60-80%): wider SL for more room
+                        if ai_result.confidence >= 80:
+                            new_sl = sl_tp.sl_pips * 0.9   # 10% tighter
+                            new_tp = sl_tp.tp_pips * 1.1   # 10% wider
+                            logger.info("AI Risk: HIGH confidence — SL tightened 10%%, TP widened 10%%")
+                        elif ai_result.confidence >= 60:
+                            new_sl = sl_tp.sl_pips * 1.15  # 15% wider SL
+                            new_tp = sl_tp.tp_pips * 1.0   # keep TP
+                            logger.info("AI Risk: MEDIUM confidence — SL widened 15%% for safety")
+                        else:
+                            new_sl = sl_tp.sl_pips
+                            new_tp = sl_tp.tp_pips
+
+                        # Recompute SL/TP prices
+                        if new_sl != sl_tp.sl_pips:
+                            if direction == TradeDirection.BUY:
+                                new_sl_price = close_now - new_sl * self.symbol_info.pip_size
+                                new_tp_price = close_now + new_tp * self.symbol_info.pip_size
+                            else:
+                                new_sl_price = close_now + new_sl * self.symbol_info.pip_size
+                                new_tp_price = close_now - new_tp * self.symbol_info.pip_size
+                            sl_tp = type(sl_tp)(
+                                sl_pips=new_sl, tp_pips=new_tp,
+                                sl_price=new_sl_price, tp_price=new_tp_price,
+                            )
+
+                        logger.info("AI APPROVED: %s %s | Confidence: %d%% | SL: %.1fp | TP: %.1fp",
+                                   ai_verdict, self.cfg.symbol, ai_confidence, sl_tp.sl_pips, sl_tp.tp_pips)
                 except Exception as e:
-                    logger.warning("AI analysis failed: %s", e)
-            logger.info("%s OPENED | vol=%.2fu | SL=%.1fp | TP=%.1fp | ATR=%.5f | ADX=%.1f | Score=%.1f",
-                        side.upper(), volume, sl_tp.sl_pips, sl_tp.tp_pips, atr_now, adx_now, score)
+                    logger.warning("AI gate failed (allowing trade): %s", e)
+
+            # === Execute the order ===
+            pos_id = await self.client.send_market_order(
+                self.cfg.symbol, side=side,
+                volume_units=volume,
+                sl_pips=sl_tp.sl_pips,
+                tp_pips=sl_tp.tp_pips,
+                label=self.cfg.bot_label,
+                comment=f"BBProV2 {self.cfg.symbol} {side}",
+            )
+
+            # Log to DB + Telegram
+            if self.db:
+                trade_id = self.db.log_trade_open(
+                    symbol=self.cfg.symbol, side=side, volume_units=volume,
+                    entry_price=close_now, sl_price=sl_tp.sl_price,
+                    tp_price=sl_tp.tp_price, sl_pips=sl_tp.sl_pips,
+                    tp_pips=sl_tp.tp_pips, atr=atr_now, adx=adx_now,
+                    rsi=rsi_now, label=self.cfg.bot_label,
+                )
+            self.daily_state.daily_trade_count += 1
+            self._daily_trades_list.append({
+                "symbol": self.cfg.symbol, "side": side,
+                "price": close_now, "sl_pips": sl_tp.sl_pips, "tp_pips": sl_tp.tp_pips,
+                "ai_confidence": ai_confidence, "ai_verdict": ai_verdict,
+            })
+
+            # Telegram signal notification
+            self.notifier.send_trade_signal(
+                symbol=self.cfg.symbol, side=side,
+                price=close_now,
+                sl=sl_tp.sl_price, tp=sl_tp.tp_price,
+                volume_lots=volume / 100000.0,
+            )
+
+            # Telegram AI analysis
+            if self.ai.enabled and ai_reasoning:
+                ai_msg = (f"AI Analysis | {self.cfg.symbol} {side.upper()}\n"
+                          f"Confidence: {ai_confidence}%\n"
+                          f"Verdict: {ai_verdict}\n"
+                          f"{ai_reasoning}\n"
+                          f"Risk: {ai_risk}\n"
+                          f"Suggestion: {ai_suggestion}\n"
+                          f"SL: {sl_tp.sl_pips:.1f}p | TP: {sl_tp.tp_pips:.1f}p")
+                self.notifier.send(ai_msg)
+
+            logger.info("%s OPENED | vol=%.2fu | SL=%.1fp | TP=%.1fp | ATR=%.5f | ADX=%.1f | Score=%.1f | AI: %d%%",
+                        side.upper(), volume, sl_tp.sl_pips, sl_tp.tp_pips, atr_now, adx_now, score, ai_confidence)
             break
 
     def _evaluate_signal(self, direction: TradeDirection, indicators_dict: dict) -> tuple:
