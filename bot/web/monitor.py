@@ -626,7 +626,11 @@ async function loadOpenPositions() {
 }
 
 async function refresh() {
-  await Promise.all([loadAccount(), loadStats(), loadEquity(), loadTrades(), loadOpenPositions()]);
+  try {
+    await Promise.allSettled([loadAccount(), loadStats(), loadEquity(), loadTrades(), loadOpenPositions()]);
+  } catch(e) { console.error('refresh error:', e); }
+  // Always remove shimmer + update status
+  document.querySelectorAll('.shimmer').forEach(el => el.classList.remove('shimmer'));
 }
 
 // ── Instant load on page open ──
@@ -636,8 +640,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.dataset.orig = el.textContent;
     el.classList.add('shimmer');
   });
+  // 5s timeout fallback — remove shimmer even if APIs are slow
+  setTimeout(() => {
+    document.querySelectorAll('.shimmer').forEach(el => el.classList.remove('shimmer'));
+    const st = document.getElementById('statusText');
+    if (st && st.textContent.includes('جاري')) st.textContent = 'الروبوت يعمل ✓';
+    const dot = document.getElementById('statusDot');
+    if (dot) dot.style.background = '#10b981';
+  }, 5000);
   await refresh();
-  document.querySelectorAll('.shimmer').forEach(el => el.classList.remove('shimmer'));
 });
 // Also fire immediately (before DOMContentLoaded in case already fired)
 refresh();
@@ -730,13 +741,16 @@ function loadTVChart(symbol) {
   });
 }
 
-// Load TradingView script then init chart
-(function() {
-  const s = document.createElement('script');
-  s.src = 'https://s3.tradingview.com/tv.js';
-  s.onload = () => loadTVChart('EURUSD');
-  document.head.appendChild(s);
-})();
+// Load TradingView AFTER dashboard data (non-blocking)
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    const s = document.createElement('script');
+    s.src = 'https://s3.tradingview.com/tv.js';
+    s.onload = () => loadTVChart('EURUSD');
+    s.onerror = () => { document.getElementById('tradingview_widget').innerHTML = '<p style="color:var(--muted);text-align:center;padding:40px">تعذر تحميل الرسوم البيانية</p>'; };
+    document.head.appendChild(s);
+  }, 1000);
+});
 </script>
 
 </body>

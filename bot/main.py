@@ -50,6 +50,7 @@ from risk_manager import (
 )
 from ctrader_client import CTraderClient, SymbolInfo, Bar
 from notifications.telegram import create_notifier
+from groq_analyzer import GroqAnalyzer
 from storage.database import TradeDB
 from analytics.performance import PerformanceAnalyzer
 from web.monitor import start_monitor
@@ -92,6 +93,7 @@ class BollingerBreakoutBotV2:
         )
         self.analyzer = PerformanceAnalyzer(self.cfg.db_path) if self.cfg.db_enabled else None
         self._partial_taken: set = set()  # position IDs that already had partial TP
+        self.ai = GroqAnalyzer()  # Groq AI for signal analysis
 
     # ------------------------------------------------------------------
     #  LIFECYCLE
@@ -227,6 +229,24 @@ class BollingerBreakoutBotV2:
             logger.info("New day reset | Start equity: %.2f", equity)
             # Send daily results summary via Telegram
             if self.cfg.telegram_enabled and hasattr(self, '_daily_trades_list'):
+                # Groq AI daily summary
+                if self.ai.enabled:
+                    try:
+                        ai_summary = self.ai.daily_summary(
+                            total_trades=self.daily_state.daily_trade_count,
+                            wins=sum(1 for t in self._daily_trades_list if t.get("win")),
+                            losses=sum(1 for t in self._daily_trades_list if not t.get("win")),
+                            total_pnl=getattr(self, '_daily_pnl', 0.0),
+                            win_rate=getattr(self, '_daily_winrate', 0.0),
+                            best_trade=getattr(self, '_best_trade', 'N/A'),
+                            worst_trade=getattr(self, '_worst_trade', 'N/A'),
+                        )
+                        if ai_summary:
+                            self.notifier.send(f"🤖 AI Daily Summary:\n{ai_summary}")
+                            logger.info("🤖 AI daily summary sent")
+                    except Exception as e:
+                        logger.warning("AI daily summary failed: %s", e)
+
                 self.notifier.send_daily_results(self._daily_trades_list, self.cfg.symbol)
                 self._daily_trades_list = []
 
@@ -464,6 +484,36 @@ class BollingerBreakoutBotV2:
                 sl=sl_tp.sl_price, tp=sl_tp.tp_price,
                 volume_lots=volume / 100000.0,
             )
+
+            # Groq AI analysis of the signal
+            if self.ai.enabled:
+                try:
+                    ai_result = self.ai.analyze_signal(
+                        symbol=self.cfg.symbol,
+                        direction=side,
+                        confluence_score=int(score),
+                        indicators={
+                            "RSI": round(rsi_now, 1),
+                            "EMA_fast": round(ema_f, 5),
+                            "EMA_slow": round(ema_s, 5),
+                            "ADX": round(adx_now, 1),
+                            "ATR": round(atr_now, 5),
+                        },
+                        atr=atr_now,
+                        adx=adx_now,
+                    )
+                    if ai_result:
+                        ai_msg = (f"🤖 AI Analysis | {self.cfg.symbol} {side.upper()}\n"
+                                  f"Confidence: {ai_result.confidence}%\n"
+                                  f"Verdict: {ai_result.verdict}\n"
+                                  f"{ai_result.reasoning}\n"
+                                  f"⚠️ {ai_result.risk_note}\n"
+                                  f"💡 {ai_result.suggestion}")
+                        self.notifier.send(ai_msg)
+                        logger.info("🤖 AI: %s (%d%%) — %s",
+                                   ai_result.verdict, ai_result.confidence, ai_result.reasoning[:80])
+                except Exception as e:
+                    logger.warning("AI analysis failed: %s", e)
             logger.info("%s OPENED | vol=%.2fu | SL=%.1fp | TP=%.1fp | ATR=%.5f | ADX=%.1f | Score=%.1f",
                         side.upper(), volume, sl_tp.sl_pips, sl_tp.tp_pips, atr_now, adx_now, score)
             break
