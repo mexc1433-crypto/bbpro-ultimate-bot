@@ -1,3 +1,10 @@
+# Load .env file if present (for containers without env var injection)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import os
 from dataclasses import dataclass, field
 from typing import List

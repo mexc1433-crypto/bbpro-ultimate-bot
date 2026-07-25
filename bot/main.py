@@ -21,7 +21,7 @@ Run:
   python main.py
 """
 
-import asyncio
+import asyncio, time
 import logging
 import signal
 import sys
@@ -607,13 +607,24 @@ async def run_all_symbols():
 
 
 def main():
-    try:
-        asyncio.run(run_all_symbols())
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user")
-    except Exception as e:
-        logger.exception("Fatal error: %s", e)
-        sys.exit(1)
+    MAX_RETRIES = 10
+    RETRY_DELAY = 30  # seconds between retries
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            asyncio.run(run_all_symbols())
+            break  # clean exit
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user")
+            break
+        except Exception as e:
+            logger.exception("Fatal error (attempt %d/%d): %s", attempt, MAX_RETRIES, e)
+            if attempt < MAX_RETRIES:
+                logger.info("⏳ Retrying in %d seconds...", RETRY_DELAY)
+                time.sleep(RETRY_DELAY)
+            else:
+                logger.error("Max retries reached. Exiting.")
+                sys.exit(1)
 
 
 if __name__ == "__main__":

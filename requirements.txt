@@ -9,3 +9,4 @@ pyOpenSSL>=23.0.0
 service-identity>=21.1.0
 aiohttp>=3.9.0
 groq>=0.11.0
+python-dotenv>=1.0.0
