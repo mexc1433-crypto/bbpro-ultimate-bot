@@ -2,10 +2,8 @@ FROM python:3.11-slim
 
 # System deps for SSL/TLS (cTrader needs it)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ libssl-dev libffi-dev curl \
-    && rm -rf /var/lib/apt/lists/*
+    gcc g++ libssl-dev libffi-dev curl
 
-# App directory
 WORKDIR /app
 
 # Install Python deps first (better caching)
@@ -15,8 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy app code
 COPY . .
 
-# Koyeb uses PORT env var (default 8000)
-ENV PORT=8000
+ENV PORT=8080
 ENV PYTHONUNBUFFERED=1
 
 # Health check
