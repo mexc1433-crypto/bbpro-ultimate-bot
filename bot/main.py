@@ -26,6 +26,9 @@ import logging
 import signal
 import sys
 import os
+import threading
+import time
+import urllib.request
 from datetime import datetime, timezone
 from typing import Optional, List
 
@@ -548,6 +551,22 @@ ALL_SYMBOLS = [
     "USDCAD",
 ]
 
+
+def _start_keepalive():
+    """Self-ping every 10 min to prevent Render free tier spin-down."""
+    def _ping():
+        while True:
+            try:
+                port = os.environ.get("PORT", "5100")
+                url = f"http://127.0.0.1:{port}/health"
+                urllib.request.urlopen(url, timeout=10)
+                logger.info("🔄 Keep-alive ping OK")
+            except Exception:
+                pass
+            time.sleep(600)  # 10 minutes
+    t = threading.Thread(target=_ping, daemon=True)
+    t.start()
+
 async def run_symbol(symbol: str, web_enabled: bool = False):
     """Run the bot for a single symbol with its own config and client."""
     from config import load_config
@@ -573,6 +592,8 @@ async def run_symbol(symbol: str, web_enabled: bool = False):
     except Exception as e:
         logger.error("[%s] Bot error: %s", symbol, e)
 
+
+_start_keepalive()
 
 async def run_all_symbols():
     """Run all symbols concurrently."""

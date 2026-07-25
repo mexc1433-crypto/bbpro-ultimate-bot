@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: bbpro-ultimate
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: CTRADER_ACCESS_TOKEN
+        sync: false
+      - key: CTRADER_ACCOUNT_ID
+        value: "47838646"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        value: "7005859703"
+      - key: GROQ_API_KEY
+        sync: false
