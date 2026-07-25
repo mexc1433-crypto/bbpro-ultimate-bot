@@ -649,11 +649,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (dot) dot.style.background = '#10b981';
   }, 5000);
   await refresh();
+  loadAIStatus(); // Load AI panel after dashboard data
 });
 // Also fire immediately (before DOMContentLoaded in case already fired)
 refresh();
 setInterval(refresh, 15000);
 </script>
+
+<!-- 🤖 AI Analysis Panel -->
+<div id="aiPanel" style="margin:24px 0;padding:20px;border-radius:12px;border:1px solid var(--border);background:var(--card)">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+    <h2 style="color:var(--text);font-size:1.1em;font-weight:700;letter-spacing:.05em;margin:0">🤖 Groq AI Market Analysis</h2>
+    <span id="aiStatusBadge" class="badge" style="padding:4px 12px;font-size:12px">جاري التحميل...</span>
+  </div>
+  <div id="aiCommentary" style="color:var(--muted);font-size:14px;line-height:1.7;min-height:40px;padding:12px;border-radius:8px;background:var(--bg)">
+    Loading AI commentary...
+  </div>
+  <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+    <button onclick="fetchAICommentary('XAUUSD')" class="sym-btn active" data-sym="XAUUSD" style="padding:6px 14px;border-radius:6px;font-size:12px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer">XAUUSD</button>
+    <button onclick="fetchAICommentary('EURUSD')" class="sym-btn" data-sym="EURUSD" style="padding:6px 14px;border-radius:6px;font-size:12px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer">EURUSD</button>
+    <button onclick="fetchAICommentary('GBPUSD')" class="sym-btn" data-sym="GBPUSD" style="padding:6px 14px;border-radius:6px;font-size:12px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer">GBPUSD</button>
+    <button onclick="fetchAICommentary('USDJPY')" class="sym-btn" data-sym="USDJPY" style="padding:6px 14px;border-radius:6px;font-size:12px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer">USDJPY</button>
+    <button onclick="fetchAICommentary('EURJPY')" class="sym-btn" data-sym="EURJPY" style="padding:6px 14px;border-radius:6px;font-size:12px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer">EURJPY</button>
+    <button onclick="fetchAICommentary('USDCAD')" class="sym-btn" data-sym="USDCAD" style="padding:6px 14px;border-radius:6px;font-size:12px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer">USDCAD</button>
+  </div>
+</div>
 
 <!-- TradingView Charts Section -->
 <div style="margin:24px 0">
