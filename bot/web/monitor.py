@@ -635,24 +635,28 @@ async function refresh() {
 
 // ── Instant load on page open ──
 document.addEventListener('DOMContentLoaded', async () => {
-  // Show skeleton shimmer while loading
-  document.querySelectorAll('.val, .stat-val').forEach(el => {
-    el.dataset.orig = el.textContent;
-    el.classList.add('shimmer');
-  });
-  // 5s timeout fallback — remove shimmer even if APIs are slow
+  // Show skeleton shimmer
+  document.querySelectorAll('.val, .stat-val').forEach(el => el.classList.add('shimmer'));
+
+  // 4s timeout fallback — remove shimmer even if APIs are slow
   setTimeout(() => {
     document.querySelectorAll('.shimmer').forEach(el => el.classList.remove('shimmer'));
     const st = document.getElementById('statusText');
     if (st && st.textContent.includes('جاري')) st.textContent = 'الروبوت يعمل ✓';
     const dot = document.getElementById('statusDot');
     if (dot) dot.style.background = '#10b981';
-  }, 5000);
-  await refresh();
-  loadAIStatus(); // Load AI panel after dashboard data
+  }, 4000);
+
+  // Load critical data first (account + stats), then secondary
+  await Promise.allSettled([loadAccount(), loadStats()]);
+  // Remove shimmer as soon as critical data is in
+  document.querySelectorAll('.shimmer').forEach(el => el.classList.remove('shimmer'));
+  // Then load secondary data in background
+  Promise.allSettled([loadEquity(), loadTrades(), loadOpenPositions()]);
+  // AI panel loads last (non-critical)
+  loadAIStatus();
 });
-// Also fire immediately (before DOMContentLoaded in case already fired)
-refresh();
+// Auto-refresh every 15s
 setInterval(refresh, 15000);
 </script>
 
@@ -854,11 +858,18 @@ def create_app(db_path: str = "bbpro.db"):
     def health():
         return jsonify({"status": "ok"})
 
+    _stats_cache = {'data': None, 'ts': 0}
     @app.route("/api/stats")
     def api_stats():
+        import time
+        # Cache stats for 30s to avoid heavy DB queries on every poll
+        if _stats_cache['data'] and (time.time() - _stats_cache['ts']) < 30:
+            return jsonify(_stats_cache['data'])
         from analytics.performance import PerformanceAnalyzer
         report = PerformanceAnalyzer(app.config["DB_PATH"]).compute()
-        return jsonify(report.to_dict())
+        _stats_cache['data'] = report.to_dict()
+        _stats_cache['ts'] = time.time()
+        return jsonify(_stats_cache['data'])
 
     @app.route("/api/trades")
     def api_trades():
@@ -902,8 +913,13 @@ def create_app(db_path: str = "bbpro.db"):
         except Exception:
             return jsonify([])
 
+    _account_cache = {'data': None, 'ts': 0}
     @app.route("/api/account")
     def api_account():
+        import time
+        # Cache for 10s — balance changes need freshness but not every request
+        if _account_cache['data'] and (time.time() - _account_cache['ts']) < 10:
+            return jsonify(_account_cache['data'])
         balance = app.config.get('ACCOUNT_BALANCE', 0.0)
         equity = balance
         try:
@@ -960,7 +976,7 @@ def create_app(db_path: str = "bbpro.db"):
             except Exception:
                 pass
                 
-        return jsonify({
+        result = {
             "balance": balance,
             "equity": equity,
             "account_id": account_id,
@@ -972,7 +988,10 @@ def create_app(db_path: str = "bbpro.db"):
             "pips_today": pips_today,
             "winrate_today": winrate_today,
             "last_signal": last_sig
-        })
+        }
+        _account_cache['data'] = result
+        _account_cache['ts'] = time.time()
+        return jsonify(result)
 
     @app.route("/api/open_positions")
     def api_open_positions():
