@@ -854,6 +854,37 @@ def create_app(db_path: str = "bbpro.db"):
     def dashboard():
         return Response(DASHBOARD_HTML, mimetype="text/html")
 
+    @app.route("/api/account/control", methods=["POST"])
+    def api_account_control():
+        """Remote account control: get balance, pause/resume, close all."""
+        if not _check_token():
+            return jsonify({"error": "Unauthorized — DASHBOARD_TOKEN required"}), 401
+        from flask import request
+        data = request.get_json(silent=True) or {}
+        action = data.get("action", "status")
+
+        if action == "status":
+            return jsonify({
+                "balance": app.config.get('ACCOUNT_BALANCE', 0.0),
+                "equity": app.config.get('ACCOUNT_EQUITY', 0.0),
+                "account_id": os.environ.get("CTRADER_ACCOUNT_ID", "47838646"),
+                "trading_mode": app.config.get('TRADING_MODE', 'PAPER'),
+                "bot_paused": app.config.get('BOT_PAUSED', False),
+                "open_positions": len(app.config.get('OPEN_POSITIONS', [])),
+            })
+        elif action == "pause":
+            app.config['BOT_PAUSED'] = True
+            return jsonify({"status": "paused"})
+        elif action == "resume":
+            app.config['BOT_PAUSED'] = False
+            return jsonify({"status": "resumed"})
+        elif action == "close_all":
+            count = len(app.config.get("OPEN_POSITIONS", []))
+            app.config["OPEN_POSITIONS"] = []
+            return jsonify({"status": "closed_all", "count": count})
+        else:
+            return jsonify({"error": f"Unknown action: {action}"}), 400
+
     @app.route("/health")
     def health():
         return jsonify({"status": "ok"})
@@ -1018,13 +1049,27 @@ def create_app(db_path: str = "bbpro.db"):
             logger.error("Error in /api/performance/daily: %s", e)
             return jsonify([])
 
-    # ── Manual Trade Endpoints (BUY / SELL) ──
+    # ── Token Auth Helper ──
+    def _check_token():
+        """Verify DASHBOARD_TOKEN if set. Returns True if authorized."""
+        expected = os.environ.get('DASHBOARD_TOKEN', '').strip()
+        if not expected:
+            return True  # No token set = open access (for local/dev)
+        from flask import request as _r
+        provided = (_r.headers.get('Authorization', '').replace('Bearer ', '') or
+                     _r.args.get('token', '') or
+                     (_r.get_json(silent=True) or {}).get('token', ''))
+        return provided == expected
+
+    # ── Manual Trade Endpoints (BUY / SELL) — Token Protected ──
     @app.route("/api/trade/open", methods=["POST"])
     def api_trade_open():
         """
         Open a manual BUY or SELL paper trade.
         Body: { "symbol": "EURUSD", "side": "BUY", "volume": 1000 }
         """
+        if not _check_token():
+            return jsonify({"error": "Unauthorized — DASHBOARD_TOKEN required"}), 401
         from flask import request
         data = request.get_json(silent=True) or {}
         symbol = data.get("symbol", "EURUSD").upper()
@@ -1071,6 +1116,8 @@ def create_app(db_path: str = "bbpro.db"):
     @app.route("/api/trade/close", methods=["POST"])
     def api_trade_close():
         """Close a manual trade by id. Body: { "id": 12345 }"""
+        if not _check_token():
+            return jsonify({"error": "Unauthorized — DASHBOARD_TOKEN required"}), 401
         from flask import request
         data = request.get_json(silent=True) or {}
         trade_id = data.get("id")
@@ -1085,17 +1132,23 @@ def create_app(db_path: str = "bbpro.db"):
     @app.route("/api/trade/close_all", methods=["POST"])
     def api_trade_close_all():
         """Close all open positions."""
+        if not _check_token():
+            return jsonify({"error": "Unauthorized — DASHBOARD_TOKEN required"}), 401
         count = len(app.config.get("OPEN_POSITIONS", []))
         app.config["OPEN_POSITIONS"] = []
         return jsonify({"status": "closed_all", "count": count})
 
     @app.route("/api/control/pause", methods=["POST"])
     def api_control_pause():
+        if not _check_token():
+            return jsonify({"error": "Unauthorized — DASHBOARD_TOKEN required"}), 401
         app.config['BOT_PAUSED'] = True
         return jsonify({"status": "success", "paused": True})
 
     @app.route("/api/control/resume", methods=["POST"])
     def api_control_resume():
+        if not _check_token():
+            return jsonify({"error": "Unauthorized — DASHBOARD_TOKEN required"}), 401
         app.config['BOT_PAUSED'] = False
         return jsonify({"status": "success", "paused": False})
 
