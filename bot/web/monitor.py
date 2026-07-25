@@ -1152,8 +1152,34 @@ def create_app(db_path: str = "bbpro.db"):
         app.config['BOT_PAUSED'] = False
         return jsonify({"status": "success", "paused": False})
 
+    # ── AI Endpoints (Groq) ──
+    @app.route("/api/ai/status")
+    def api_ai_status():
+        groq_key = os.environ.get('GROQ_API_KEY', '')
+        return jsonify({
+            'ai_enabled': bool(groq_key),
+            'model': 'llama-3.3-70b-versatile' if groq_key else 'disabled',
+            'features': ['signal_analysis', 'daily_summary', 'market_commentary'] if groq_key else [],
+            'min_confidence': int(os.environ.get('AI_MIN_CONFIDENCE', '60')),
+        })
 
-    
+    @app.route("/api/ai/commentary")
+    def api_ai_commentary():
+        import sys as _sys
+        _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        try:
+            from groq_analyzer import GroqAnalyzer
+            ai = GroqAnalyzer()
+            if not ai.enabled:
+                return jsonify({'commentary': 'AI disabled — set GROQ_API_KEY', 'enabled': False})
+            symbol = request.args.get('symbol', 'XAUUSD')
+            indicators = app.config.get('LAST_INDICATORS', {})
+            if not indicators:
+                indicators = {'note': 'No live indicator data yet — bot warming up'}
+            commentary = ai.market_commentary(symbol, indicators)
+            return jsonify({'commentary': commentary, 'enabled': True, 'symbol': symbol})
+        except Exception as e:
+            return jsonify({'commentary': f'Error: {str(e)}', 'enabled': False}), 500
 
     return app
 
